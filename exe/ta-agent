@@ -17,9 +17,6 @@ require "ta-agent"
 # This is a skeleton - actual command routing will be implemented
 # using TTY::CommandRouter in lib/ta-agent/cli/root.rb
 if __FILE__ == $PROGRAM_NAME
-  # TODO: Implement CLI routing via TaAgent::CLI::Root
-  # For now, this is a placeholder that shows the design intent
-  puts "ta-agent CLI - Implementation pending"
-  puts "See lib/ta-agent/cli/root.rb for command routing"
-  exit 1
+  require_relative "../lib/ta-agent/cli/root"
+  TaAgent::CLI::Root.call(ARGV)
 end
