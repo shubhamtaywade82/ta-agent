@@ -75,31 +75,143 @@ module TaAgent
       private
 
       def build_15m_context
-        # TODO: Fetch 15m data and calculate indicators
-        @result[:timeframes][:tf_15m] = {
-          trend: "neutral",
-          adx: nil,
-          ema_9: nil,
-          ema_21: nil,
-          status: "pending"
-        }
+        begin
+          # Fetch last 30 days of 15m data
+          to_date = Date.today
+          from_date = to_date - 30
+
+          ohlcv_data = @dhanhq_client.fetch_ohlcv(
+            symbol: @symbol,
+            timeframe: "15",
+            from_date: from_date,
+            to_date: to_date
+          )
+
+          if ohlcv_data.empty?
+            @result[:timeframes][:tf_15m] = {
+              trend: "unknown",
+              status: "no_data",
+              error: "No data available"
+            }
+            return
+          end
+
+          # Extract closing prices
+          closes = ohlcv_data.map { |d| d[:close] }
+
+          # Calculate EMAs
+          ema_9 = TA::Indicators::EMA.latest(closes, 9)
+          ema_21 = TA::Indicators::EMA.latest(closes, 21)
+
+          # Determine trend
+          trend = if ema_9 && ema_21
+                    if ema_9 > ema_21
+                      "bullish"
+                    elsif ema_9 < ema_21
+                      "bearish"
+                    else
+                      "neutral"
+                    end
+                  else
+                    "neutral"
+                  end
+
+          @result[:timeframes][:tf_15m] = {
+            trend: trend,
+            ema_9: ema_9,
+            ema_21: ema_21,
+            data_points: ohlcv_data.length,
+            latest_close: closes.last,
+            status: "complete"
+          }
+        rescue TaAgent::DhanHQError => e
+          @result[:timeframes][:tf_15m] = {
+            trend: "unknown",
+            status: "error",
+            error: e.message
+          }
+          @result[:errors] << "15m context: #{e.message}"
+        end
       end
 
       def build_5m_context
-        # TODO: Fetch 5m data and calculate indicators
-        @result[:timeframes][:tf_5m] = {
-          setup: "neutral",
-          pullback: false,
-          status: "pending"
-        }
+        begin
+          # Fetch last 7 days of 5m data
+          to_date = Date.today
+          from_date = to_date - 7
+
+          ohlcv_data = @dhanhq_client.fetch_ohlcv(
+            symbol: @symbol,
+            timeframe: "5",
+            from_date: from_date,
+            to_date: to_date
+          )
+
+          if ohlcv_data.empty?
+            @result[:timeframes][:tf_5m] = {
+              setup: "unknown",
+              status: "no_data"
+            }
+            return
+          end
+
+          closes = ohlcv_data.map { |d| d[:close] }
+          ema_9 = TA::Indicators::EMA.latest(closes, 9)
+
+          @result[:timeframes][:tf_5m] = {
+            setup: "analyzed",
+            ema_9: ema_9,
+            data_points: ohlcv_data.length,
+            latest_close: closes.last,
+            status: "complete"
+          }
+        rescue TaAgent::DhanHQError => e
+          @result[:timeframes][:tf_5m] = {
+            setup: "unknown",
+            status: "error",
+            error: e.message
+          }
+          @result[:errors] << "5m context: #{e.message}"
+        end
       end
 
       def build_1m_context
-        # TODO: Fetch 1m data and calculate indicators
-        @result[:timeframes][:tf_1m] = {
-          trigger: "pending",
-          status: "pending"
-        }
+        begin
+          # Fetch last 1 day of 1m data
+          to_date = Date.today
+          from_date = to_date - 1
+
+          ohlcv_data = @dhanhq_client.fetch_ohlcv(
+            symbol: @symbol,
+            timeframe: "1",
+            from_date: from_date,
+            to_date: to_date
+          )
+
+          if ohlcv_data.empty?
+            @result[:timeframes][:tf_1m] = {
+              trigger: "unknown",
+              status: "no_data"
+            }
+            return
+          end
+
+          closes = ohlcv_data.map { |d| d[:close] }
+
+          @result[:timeframes][:tf_1m] = {
+            trigger: "analyzed",
+            data_points: ohlcv_data.length,
+            latest_close: closes.last,
+            status: "complete"
+          }
+        rescue TaAgent::DhanHQError => e
+          @result[:timeframes][:tf_1m] = {
+            trigger: "unknown",
+            status: "error",
+            error: e.message
+          }
+          @result[:errors] << "1m context: #{e.message}"
+        end
       end
 
       def build_option_chain_context
@@ -112,17 +224,50 @@ module TaAgent
       end
 
       def make_decision
-        # TODO: Implement decision logic
-        # For now, set a placeholder recommendation
-        @result[:recommendation] = {
-          action: "wait",
-          reason: "Analysis implementation pending",
-          strike: nil,
-          entry: nil,
-          stop_loss: nil,
-          target: nil
-        }
-        @result[:confidence] = 0.0
+        tf_15m = @result[:timeframes][:tf_15m]
+        tf_5m = @result[:timeframes][:tf_5m]
+        tf_1m = @result[:timeframes][:tf_1m]
+
+        # Basic decision logic based on 15m trend
+        if tf_15m[:status] == "complete" && tf_15m[:trend] == "bullish"
+          confidence = 0.6
+          if tf_5m[:status] == "complete" && tf_5m[:ema_9] && tf_15m[:ema_9]
+            # 5m EMA above 15m EMA = stronger bullish
+            if tf_5m[:ema_9] > tf_15m[:ema_9]
+              confidence = 0.75
+            end
+          end
+
+          @result[:recommendation] = {
+            action: "buy",
+            reason: "15m trend is bullish#{tf_15m[:ema_9] && tf_15m[:ema_21] ? " (EMA 9: #{tf_15m[:ema_9].round(2)} > EMA 21: #{tf_15m[:ema_21].round(2)})" : ""}",
+            strike: nil,
+            entry: tf_1m[:latest_close],
+            stop_loss: nil,
+            target: nil
+          }
+          @result[:confidence] = confidence
+        elsif tf_15m[:status] == "complete" && tf_15m[:trend] == "bearish"
+          @result[:recommendation] = {
+            action: "sell",
+            reason: "15m trend is bearish#{tf_15m[:ema_9] && tf_15m[:ema_21] ? " (EMA 9: #{tf_15m[:ema_9].round(2)} < EMA 21: #{tf_15m[:ema_21].round(2)})" : ""}",
+            strike: nil,
+            entry: tf_1m[:latest_close],
+            stop_loss: nil,
+            target: nil
+          }
+          @result[:confidence] = 0.6
+        else
+          @result[:recommendation] = {
+            action: "wait",
+            reason: tf_15m[:status] == "error" ? "Data fetch error" : "Trend unclear or neutral",
+            strike: nil,
+            entry: nil,
+            stop_loss: nil,
+            target: nil
+          }
+          @result[:confidence] = 0.0
+        end
       end
     end
   end
