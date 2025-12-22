@@ -3,6 +3,7 @@
 require_relative "analyse"
 require_relative "watch"
 require_relative "config"
+require_relative "console"
 
 # TaAgent::CLI::Root
 #
@@ -52,6 +53,8 @@ module TaAgent
           Watch.call(@argv, @global_opts)
         when "config"
           Config.call(@argv, @global_opts)
+        when "console"
+          Console.call(@argv, @global_opts)
         else
           show_help
           exit 1
@@ -99,11 +102,13 @@ module TaAgent
           Usage:
             ta-agent analyse SYMBOL          Run one-time analysis
             ta-agent watch SYMBOL [OPTIONS]  Continuous monitoring mode
+            ta-agent console                 Interactive console/REPL mode
             ta-agent config                  Interactive configuration
 
           Commands:
             analyse, analyze    Run technical analysis for SYMBOL (e.g., NIFTY)
             watch               Monitor SYMBOL continuously (prints only state changes)
+            console             Start interactive console (like Rails console)
             config              Interactive configuration setup
 
           Options:
@@ -114,6 +119,7 @@ module TaAgent
           Examples:
             ta-agent analyse NIFTY
             ta-agent watch NIFTY --interval 60
+            ta-agent console
             ta-agent config
 
           Environment Variables:

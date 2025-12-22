@@ -31,22 +31,32 @@ module TaAgent
       end
 
       def call
-        symbol = @argv.shift
-
-        unless symbol
-          puts "Error: SYMBOL is required"
-          puts "Usage: ta-agent analyse SYMBOL"
+        # Load and validate config
+        begin
+          config = TaAgent::Config.load
+        rescue TaAgent::ConfigurationError => e
+          puts "Configuration Error:"
+          puts e.message
           exit 1
         end
 
-        # TODO: Implement analysis
-        # - Validate config via TaAgent::Config
+        symbol = @argv.shift || config.default_symbol
+        symbol = symbol.upcase
+
+        puts "Analyzing #{symbol}..."
+        puts "Config loaded: ✓"
+        puts "  DhanHQ Client ID: #{config.dhanhq_client_id[0..10]}..."
+        puts "  Ollama: #{config.ollama_enabled? ? 'Enabled' : 'Disabled'}"
+        puts "  Default Symbol: #{config.default_symbol}"
+        puts "  Confidence Threshold: #{config.confidence_threshold}"
+
+        # TODO: Implement actual analysis
         # - Initialize TaAgent::Agent::Runner with symbol
         # - Run analysis
         # - Format output
-        puts "Analyse command - Implementation pending"
-        puts "Symbol: #{symbol}"
-        puts "This will run technical analysis for #{symbol}"
+        puts "\n[Analysis] Running analysis for #{symbol}..."
+        puts "Status: Implementation pending"
+        puts "This will run technical analysis for #{symbol} when implemented"
         exit 0
       end
     end

@@ -49,6 +49,7 @@ Gem::Specification.new do |spec|
   spec.add_dependency "tty-config", "~> 0.6"
   spec.add_dependency "faraday", ">= 0.9", "< 3.0"  # Flexible to work with DhanHQ
   spec.add_dependency "json", "~> 2.6"
+  spec.add_dependency "dotenv", "~> 2.8"  # Load .env files
 
   # No Rails
   # No RSpec

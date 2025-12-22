@@ -14,3 +14,5 @@ gem "rubocop", "~> 1.21"
 # Git source dependencies (not valid in gemspec)
 # Note: Check the actual gem name in the dhanhq-client repository
 gem "DhanHQ", git: "https://github.com/shubhamtaywade82/dhanhq-client.git", branch: "main"
+
+gem "dotenv", "~> 2.8"

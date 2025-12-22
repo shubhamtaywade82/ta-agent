@@ -1,6 +1,18 @@
 # frozen_string_literal: true
 
+# Load .env file if it exists (before loading other modules)
+begin
+  require "dotenv"
+  # Look for .env in current directory or project root
+  env_file = File.exist?(".env") ? ".env" : File.expand_path("../.env", __dir__)
+  Dotenv.load(env_file) if File.exist?(env_file)
+rescue LoadError
+  # dotenv gem not available, skip .env loading
+end
+
 require_relative "ta-agent/version"
+require_relative "ta-agent/environment"
+require_relative "ta-agent/config"
 
 # TaAgent - CLI-first Technical Analysis Agent for Indian markets
 #
