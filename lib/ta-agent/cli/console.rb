@@ -7,14 +7,16 @@
 # Usage: ta-agent console
 #
 # Features:
-# - Interactive prompt with TTY tools
+# - Interactive prompt with Readline/Reline support
+# - Command history with arrow key navigation
+# - Tab completion for commands
 # - Run analysis commands interactively
 # - Explore data and results
 # - Real-time monitoring with interactive controls
 #
 # Design:
+# - Uses Readline/Reline for command history and completion
 # - Uses TTY::Prompt for interactive menus
-# - Provides command history
 # - Supports all analysis commands in interactive mode
 module TaAgent
   module CLI
@@ -27,13 +29,19 @@ module TaAgent
         @argv = argv
         @global_opts = global_opts
         @prompt = nil # Will be initialized with TTY::Prompt
+        @readline_module = nil # Will be initialized with Readline or Reline
+        @readline_method = :readline
         @running = true
+        @history_file = File.expand_path("~/.ta-agent/history")
+        @commands = %w[analyse analyze watch menu help version clear exit quit]
       end
 
       def call
         require "tty-prompt"
         require "tty-spinner"
         require "tty-table"
+        require "fileutils"
+        setup_readline
 
         @prompt = TTY::Prompt.new
 
@@ -44,21 +52,91 @@ module TaAgent
           ╚═══════════════════════════════════════════════════════════╝
 
           Type 'help' for available commands, 'exit' to quit.
+          Use ↑↓ arrow keys for command history, Tab for completion.
         BANNER
 
         main_loop
+      ensure
+        save_history
       end
 
       private
 
+      def setup_readline
+        # Try to use Reline (Ruby 3.1+) or fallback to Readline
+        begin
+          require "reline"
+          @readline_module = Reline
+          @readline_method = :readline
+        rescue LoadError
+          require "readline"
+          @readline_module = Readline
+          @readline_method = :readline
+        end
+
+        # Set up completion
+        @readline_module.completion_proc = proc do |input|
+          return [] if input.nil? || input.empty?
+
+          input_lower = input.downcase
+          matches = @commands.select { |cmd| cmd.downcase.start_with?(input_lower) }
+
+          # If we have a partial match, also check for commands that might be in progress
+          # (e.g., "analyse NIFTY" - we want to complete "analyse" first)
+          if matches.empty? && input.include?(" ")
+            # Command already entered, no completion needed
+            []
+          else
+            matches
+          end
+        end
+
+        # Load history
+        load_history
+      end
+
+      def load_history
+        return unless File.exist?(@history_file)
+        return unless @readline_module.const_defined?(:HISTORY)
+
+        File.readlines(@history_file, chomp: true).each do |line|
+          next if line.strip.empty?
+
+          history = @readline_module::HISTORY
+          history.push(line) unless history.include?(line)
+        end
+      rescue StandardError => e
+        warn "Warning: Could not load history: #{e.message}" if @global_opts[:debug]
+      end
+
+      def save_history
+        return unless @readline_module
+        return unless @readline_module.const_defined?(:HISTORY)
+
+        # Ensure directory exists
+        FileUtils.mkdir_p(File.dirname(@history_file))
+
+        # Save last 1000 lines of history
+        history = @readline_module::HISTORY
+        history_lines = history.to_a.last(1000)
+        File.write(@history_file, history_lines.join("\n") + "\n")
+      rescue StandardError => e
+        warn "Warning: Could not save history: #{e.message}" if @global_opts[:debug]
+      end
+
       def main_loop
         while @running
           begin
-            command = @prompt.ask("ta-agent> ", default: "")
+            command = @readline_module.public_send(@readline_method, "ta-agent> ", true)
 
-            next if command.nil? || command.strip.empty?
+            # Handle EOF (Ctrl+D)
+            break if command.nil?
 
-            handle_command(command.strip)
+            command = command.strip
+            next if command.empty?
+
+            # Add to history (Readline does this automatically, but ensure it's saved)
+            handle_command(command)
           rescue Interrupt
             puts "\nUse 'exit' to quit or Ctrl+D"
           rescue StandardError => e
@@ -70,6 +148,7 @@ module TaAgent
             end
           end
         end
+        puts "\nGoodbye!" if @running
       end
 
       def handle_command(cmd)
@@ -155,18 +234,46 @@ module TaAgent
 
         symbol = symbol.upcase
 
-        # TODO: Implement actual analysis
-        # For now, show placeholder with config info
+        # Run analysis
+        require_relative "../agent/runner"
         spinner = TTY::Spinner.new("[:spinner] Analyzing...", format: :dots)
         spinner.auto_spin
-        sleep(1) # Simulate work
-        spinner.stop("Done!")
 
-        puts "\nAnalysis results for #{symbol}:"
-        puts "  Config: ✓ Loaded"
-        puts "  Ollama: #{config.ollama_enabled? ? 'Enabled' : 'Disabled'}"
-        puts "  Status: Implementation pending"
-        puts "  This will show actual TA results when implemented\n"
+        begin
+          runner = TaAgent::Agent::Runner.new(symbol: symbol, config: config)
+          result = runner.run
+          spinner.stop("Done!")
+
+          # Format results
+          puts "\n" + "=" * 60
+          puts "Analysis Results for #{result[:symbol]}"
+          puts "=" * 60
+
+          if result[:errors].any?
+            puts "\n⚠ Errors:"
+            result[:errors].each { |error| puts "  - #{error}" }
+          end
+
+          puts "\nTimeframes:"
+          result[:timeframes].each do |tf, data|
+            puts "  #{tf.to_s.upcase}: #{data[:status] || 'pending'}"
+          end
+
+          if result[:recommendation]
+            rec = result[:recommendation]
+            puts "\nRecommendation: #{rec[:action].upcase}"
+            puts "  #{rec[:reason]}"
+            puts "  Confidence: #{(result[:confidence] * 100).round(1)}%"
+          end
+
+          puts "=" * 60 + "\n"
+        rescue StandardError => e
+          spinner.stop("Error!")
+          puts "\nError: #{e.message}"
+          if @global_opts[:debug]
+            puts e.backtrace.join("\n")
+          end
+        end
       end
 
       def run_watch_interactive(symbol, interval = 60)
