@@ -1,3 +1,25 @@
 #!/usr/bin/env ruby
+# frozen_string_literal: true
 
-require "ta/agent"
+# Add lib to load path for development mode
+lib_path = File.expand_path("../lib", __dir__)
+$LOAD_PATH.unshift(lib_path) unless $LOAD_PATH.include?(lib_path)
+
+require "ta-agent"
+
+# CLI entrypoint for ta-agent
+#
+# Usage:
+#   ta-agent analyse SYMBOL
+#   ta-agent watch SYMBOL [--interval SECONDS]
+#   ta-agent config
+#
+# This is a skeleton - actual command routing will be implemented
+# using TTY::CommandRouter in lib/ta-agent/cli/root.rb
+if __FILE__ == $PROGRAM_NAME
+  # TODO: Implement CLI routing via TaAgent::CLI::Root
+  # For now, this is a placeholder that shows the design intent
+  puts "ta-agent CLI - Implementation pending"
+  puts "See lib/ta-agent/cli/root.rb for command routing"
+  exit 1
+end

@@ -1,23 +1,27 @@
 # frozen_string_literal: true
 
-require_relative "lib/ta/agent/version"
+require_relative "lib/ta-agent/version"
 
 Gem::Specification.new do |spec|
   spec.name = "ta-agent"
-  spec.version = Ta::Agent::VERSION
+  spec.version = TaAgent::VERSION
   spec.authors = ["Shubham Taywade"]
   spec.email = ["shubhamtaywade82@gmail.com"]
 
-  spec.summary = "TODO: Write a short summary, because RubyGems requires one."
-  spec.description = "TODO: Write a longer description or delete this line."
-  spec.homepage = "TODO: Put your gem's website or public repo URL here."
+  spec.summary = "CLI-first Technical Analysis Agent for Indian markets (NIFTY/options)"
+  spec.description = <<~DESC
+    A serious CLI-based Technical Analysis Agent for Indian markets, powered by
+    dhanhq-client for data, deterministic TA pipelines (multi-timeframe), and
+    optional LLM analysis via Ollama. Zero Rails, zero RSpec, zero UI.
+    Designed for automation, cron jobs, and integration with trading systems.
+  DESC
+  spec.homepage = "https://github.com/shubhamtaywade/ta-agent"
   spec.license = "MIT"
   spec.required_ruby_version = ">= 3.2.0"
 
-  spec.metadata["allowed_push_host"] = "TODO: Set to your gem server 'https://example.com'"
   spec.metadata["homepage_uri"] = spec.homepage
-  spec.metadata["source_code_uri"] = "TODO: Put your gem's public repo URL here."
-  spec.metadata["changelog_uri"] = "TODO: Put your gem's CHANGELOG.md URL here."
+  spec.metadata["source_code_uri"] = spec.homepage
+  spec.metadata["changelog_uri"] = "#{spec.homepage}/blob/main/CHANGELOG.md"
 
   # Specify which files should be added to the gem when it is released.
   # The `git ls-files -z` loads the files in the RubyGem that have been added into git.
@@ -32,9 +36,21 @@ Gem::Specification.new do |spec|
   spec.executables = spec.files.grep(%r{\Aexe/}) { |f| File.basename(f) }
   spec.require_paths = ["lib"]
 
-  # Uncomment to register a new dependency of your gem
-  # spec.add_dependency "example-gem", "~> 1.0"
+  # Core dependencies - minimal, intentional
+  # Note: DhanHQ git source is specified in Gemfile for development
+  # Gemspecs cannot use git: option - use version requirement here
+  # Update gem name once confirmed from dhanhq-client repository
+  spec.add_dependency "DhanHQ", ">= 0"
+  spec.add_dependency "tty-command", "~> 0.10"
+  spec.add_dependency "tty-prompt", "~> 0.23"
+  spec.add_dependency "tty-spinner", "~> 0.9"
+  spec.add_dependency "tty-table", "~> 0.12"
+  spec.add_dependency "tty-logger", "~> 0.6"
+  spec.add_dependency "tty-config", "~> 0.6"
+  spec.add_dependency "faraday", ">= 0.9", "< 3.0"  # Flexible to work with DhanHQ
+  spec.add_dependency "json", "~> 2.6"
 
-  # For more information and examples about making a new gem, check out our
-  # guide at: https://bundler.io/guides/creating_gem.html
+  # No Rails
+  # No RSpec
+  # No ActiveSupport bloat
 end

@@ -1,43 +1,160 @@
-# Ta::Agent
+# TaAgent
 
-TODO: Delete this and the text below, and describe your gem
+**CLI-first Technical Analysis Agent for Indian markets (NIFTY/options)**
 
-Welcome to your new gem! In this directory, you'll find the files you need to be able to package up your Ruby library into a gem. Put your Ruby code in the file `lib/ta/agent`. To experiment with that code, run `bin/console` for an interactive prompt.
+A serious CLI-based Technical Analysis Agent powered by:
+- `dhanhq-client` (data source)
+- Deterministic TA pipelines (multi-timeframe)
+- Optional LLM analysis via **Ollama**
+- Zero Rails, zero RSpec, zero UI
+- CLI-only (like `kubectl`, `terraform`, `gh`)
+
+## Design Philosophy
+
+- **CLI is the primary interface** - automation-ready, cron-friendly
+- **LLM is optional** - works without Ollama, deterministic core
+- **LLM = analyst, not calculator** - provides explanation, not calculation
+- **Config via ENV + config file** - simple, portable
+- **Works offline** (except DhanHQ API calls)
 
 ## Installation
 
-TODO: Replace `UPDATE_WITH_YOUR_GEM_NAME_IMMEDIATELY_AFTER_RELEASE_TO_RUBYGEMS_ORG` with your gem name right after releasing it to RubyGems.org. Please do not do it earlier due to security reasons. Alternatively, replace this section with instructions to install your gem from git if you don't plan to release to RubyGems.org.
-
-Install the gem and add to the application's Gemfile by executing:
-
 ```bash
-bundle add UPDATE_WITH_YOUR_GEM_NAME_IMMEDIATELY_AFTER_RELEASE_TO_RUBYGEMS_ORG
+gem install ta-agent
 ```
 
-If bundler is not being used to manage dependencies, install the gem by executing:
+Or add to your Gemfile:
+
+```ruby
+gem 'ta-agent'
+```
+
+## Configuration
+
+### Required ENV Variables
 
 ```bash
-gem install UPDATE_WITH_YOUR_GEM_NAME_IMMEDIATELY_AFTER_RELEASE_TO_RUBYGEMS_ORG
+export DHANHQ_CLIENT_ID=xxxx
+export DHANHQ_ACCESS_TOKEN=xxxx
+export OLLAMA_HOST_URL=http://localhost:11434  # Optional
+```
+
+### Optional Config File
+
+Create `~/.ta-agent/config.yml`:
+
+```yaml
+ollama:
+  model: mistral
+analysis:
+  default_symbol: NIFTY
+  confidence_threshold: 0.75
+options:
+  max_spread_pct: 1.0
 ```
 
 ## Usage
 
-TODO: Write usage instructions here
+### One-time Analysis
+
+```bash
+ta-agent analyse NIFTY
+```
+
+Output:
+```
+✔ 15m Trend: Bullish (ADX 28)
+✔ 5m Setup: Pullback resolved
+✔ Option: 22500 CE (Score 8.4)
+✔ 1m Trigger: Confirmed
+
+Recommendation:
+  Buy 22500 CE above 105
+  SL: 98 | Target: 140–160
+  Confidence: 82%
+```
+
+### Continuous Monitoring
+
+```bash
+ta-agent watch NIFTY --interval 60
+```
+
+Runs analysis every 60 seconds, prints only state changes.
+
+### Interactive Config
+
+```bash
+ta-agent config
+```
+
+## Architecture
+
+### Core Components
+
+- **CLI** (`lib/ta-agent/cli/`) - Command routing and interface
+- **Agent** (`lib/ta-agent/agent/`) - Core execution logic
+- **TA** (`lib/ta-agent/ta/`) - Technical analysis pipelines
+- **Options** (`lib/ta-agent/options/`) - Option chain analysis
+- **LLM** (`lib/ta-agent/llm/`) - Optional Ollama integration
+- **DhanHQ** (`lib/ta-agent/dhanhq/`) - Data source wrapper
+
+### Agent Flow
+
+1. Build 15m context → abort if blocked
+2. Build 5m context → abort if blocked
+3. Build option chain context → abort if empty
+4. Build 1m context
+5. Apply gates (kill switches)
+6. If LLM enabled → LLM decision
+7. Else → deterministic decision
+8. Format output
 
 ## Development
 
-After checking out the repo, run `bin/setup` to install dependencies. Then, run `rake spec` to run the tests. You can also run `bin/console` for an interactive prompt that will allow you to experiment.
+This gem is designed to be implemented incrementally. The structure is in place with placeholder files documenting the design intent.
 
-To install this gem onto your local machine, run `bundle exec rake install`. To release a new version, update the version number in `version.rb`, and then run `bundle exec rake release`, which will create a git tag for the version, push git commits and the created tag, and push the `.gem` file to [rubygems.org](https://rubygems.org).
+### Structure
 
-## Contributing
+```
+lib/ta-agent/
+├── config.rb              # Global config loader
+├── environment.rb          # ENV validation
+├── cli/                    # CLI commands
+├── dhanhq/                 # Data source wrapper
+├── ta/                     # Technical analysis
+│   ├── indicators/         # EMA, ADX, ATR, VWAP
+│   ├── structure/          # Trend, market structure
+│   └── timeframes/         # 15m, 5m, 1m analyzers
+├── options/                # Option chain analysis
+├── market/                 # VIX, session, kill switches
+├── agent/                  # Core runner
+├── llm/                    # Ollama integration
+└── output/                 # Formatters
+```
 
-Bug reports and pull requests are welcome on GitHub at https://github.com/[USERNAME]/ta-agent. This project is intended to be a safe, welcoming space for collaboration, and contributors are expected to adhere to the [code of conduct](https://github.com/[USERNAME]/ta-agent/blob/master/CODE_OF_CONDUCT.md).
+## What This Gem Does NOT Do
+
+❌ Trade execution
+❌ Backtesting
+❌ Web UI
+❌ Strategy overfitting
+❌ Over-configuration
+
+This gem is **analysis only**. Execution belongs elsewhere.
+
+## Future Evolution
+
+This CLI-first design can evolve into:
+- Daemon mode
+- Cron tool
+- Webhook emitter
+- Telegram bot wrapper
 
 ## License
 
-The gem is available as open source under the terms of the [MIT License](https://opensource.org/licenses/MIT).
+MIT
 
-## Code of Conduct
+## Contributing
 
-Everyone interacting in the Ta::Agent project's codebases, issue trackers, chat rooms and mailing lists is expected to follow the [code of conduct](https://github.com/[USERNAME]/ta-agent/blob/master/CODE_OF_CONDUCT.md).
+This is a serious technical analysis tool. Contributions should maintain the CLI-first, deterministic core philosophy.
