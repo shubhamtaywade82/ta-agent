@@ -22,7 +22,7 @@ module TaAgent
   module LLM
     class OllamaClient
       DEFAULT_TIMEOUT = 30
-      DEFAULT_MODEL = "mistral"
+      DEFAULT_MODEL = "llama3.2:3b"
 
       attr_reader :host_url, :model
 
@@ -52,11 +52,18 @@ module TaAgent
           req.headers["Content-Type"] = "application/json"
         end
 
+        # Check for HTTP errors
+        unless response.success?
+          raise TaAgent::OllamaError, "Ollama API returned error: #{response.status} - #{response.body}"
+        end
+
         parse_response(response.body)
       rescue Faraday::TimeoutError, Faraday::ConnectionFailed => e
-        raise OllamaError, "Ollama connection failed: #{e.message}"
+        raise TaAgent::OllamaError, "Ollama connection failed: #{e.message}"
+      rescue TaAgent::OllamaError
+        raise
       rescue StandardError => e
-        raise OllamaError, "Ollama API error: #{e.message}"
+        raise TaAgent::OllamaError, "Ollama API error: #{e.message}"
       end
 
       private
@@ -99,10 +106,30 @@ module TaAgent
 
         parsed = body.is_a?(String) ? JSON.parse(body) : body
 
+        # Ollama API response structure can vary:
+        # Standard: { "message": { "role": "assistant", "content": "...", "tool_calls": [...] } }
+        # Sometimes: { "message": { "content": "..." } }
+        # Or direct: { "content": "..." } (if already extracted)
+
+        # Try to find message content in various locations
+        message = parsed["message"] || parsed[:message]
+
+        # If message is a hash, extract from it
+        if message.is_a?(Hash)
+          content = message["content"] || message[:content] || ""
+          tool_calls = message["tool_calls"] || message[:tool_calls] || []
+          finish_reason = message["finish_reason"] || message[:finish_reason] || (parsed["done"] ? "stop" : nil)
+        else
+          # Fallback: try direct access
+          content = parsed["content"] || parsed[:content] || ""
+          tool_calls = parsed["tool_calls"] || parsed[:tool_calls] || []
+          finish_reason = parsed["finish_reason"] || parsed[:finish_reason] || (parsed["done"] ? "stop" : nil)
+        end
+
         {
-          content: parsed.dig("message", "content") || "",
-          tool_calls: parsed.dig("message", "tool_calls") || [],
-          finish_reason: parsed.dig("message", "finish_reason")
+          content: content.to_s,
+          tool_calls: tool_calls,
+          finish_reason: finish_reason
         }
       end
     end

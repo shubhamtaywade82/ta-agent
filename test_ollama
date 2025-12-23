@@ -1,0 +1,48 @@
+🚀 ta-agent Console - Ollama Integration Ready
+
+Quick Start:
+------------
+# Test Ollama connection
+test_ollama
+
+# Simple chat
+chat("What is technical analysis?")
+
+# Create Ollama client
+client = ollama_client(model: "llama3.2:3b")
+response = client.chat(messages: [{ role: "user", content: "Hello!" }])
+
+# Create agent loop
+loop = agent_loop(goal: "Analyze NIFTY", initial_context: { symbol: "NIFTY" })
+result = loop.run
+
+Available Classes:
+------------------
+- TaAgent::LLM::OllamaClient      # Direct Ollama API client
+- TaAgent::LLM::ResponseParser    # Parse LLM responses
+- TaAgent::Agent::Loop             # Agent loop (ReAct pattern)
+- TaAgent::Agent::ToolRegistry     # Tool registry for agent
+- TaAgent::Config                  # Configuration
+
+Type 'help' for more info or start experimenting!
+^C
+^C
+^C
+^C
+^C
+^C
+^C
+^C
+^C
+^C
+[?25l[1G[K[1G[0m3.3.4 :001 > [0m[?25h[14G[14G
+[1G[?25l[1G[K[1G[0m3.3.4 :001 > [0m[?25h[14G[14G[14G
+[1G[?25l[1G[K[1G[0m3.3.4 :001 > [0m[?25h[14G[14G
+[1G[?25l[1G[K[1G[0m3.3.4 :001 > [0m[?25h[14G[14G
+[1G[?25l[1G[K[1G[0m3.3.4 :001 > [0m[?25h[14G[14G
+[1G[?25l[1G[K[1G[0m3.3.4 :001 > [0m[?25h[14G[14G
+[1G[?25l[1G[K[1G[0m3.3.4 :001 > [0m[?25h[14G[14G
+[1G[?25l[1G[K[1G[0m3.3.4 :001 > [0m[?25h[14G[14G
+[1G[?25l[1G[K[1G[0m3.3.4 :001 > [0m[?25h[14G[14G
+[1G[?25l[1G[K[1G[0m3.3.4 :001 > [0m[?25h[14G[14G
+[1G[?25l[1G[K[1G[0m3.3.4 :001 > [0m[?25h[14G

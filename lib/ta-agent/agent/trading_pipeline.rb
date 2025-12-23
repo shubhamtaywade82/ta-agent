@@ -6,10 +6,10 @@ require_relative "gates"
 require_relative "tool_registry"
 require_relative "loop"
 require_relative "context_contracts"
+require_relative "../tools/timeframe_context_builders"
+require_relative "../tools/option_chain_tools"
+require_relative "../tools/risk_tools"
 require_relative "../options/strike_scorer"
-require_relative "../ta/timeframes/tf_15m"
-require_relative "../ta/timeframes/tf_5m"
-require_relative "../ta/timeframes/tf_1m"
 
 # TaAgent::Agent::TradingPipeline
 #
@@ -83,10 +83,10 @@ module TaAgent
 
         # STEP 5: LLM Analysis (if enabled and all gates passed)
         recommendation = if @config.ollama_enabled?
-                          analyze_with_llm(tf_15m, tf_5m, tf_1m, options)
-                        else
-                          deterministic_recommendation(tf_15m, tf_5m, tf_1m, options)
-                        end
+                           analyze_with_llm(tf_15m, tf_5m, tf_1m, options)
+                         else
+                           deterministic_recommendation(tf_15m, tf_5m, tf_1m, options)
+                         end
 
         # STEP 6: Build final result
         @result.merge!(
@@ -98,7 +98,7 @@ module TaAgent
           options: options,
           recommendation: recommendation,
           confidence: recommendation[:confidence] || 0.0,
-          gates_passed: ["15m", "5m", "options", "1m"]
+          gates_passed: %w[15m 5m options 1m]
         )
 
         @result
@@ -140,14 +140,18 @@ module TaAgent
         tf_context = TA::Timeframes::TF15M.build(ohlcv_data)
 
         # Determine bias
-        bias = tf_context[:trend] == "bullish" ? "bullish" : (tf_context[:trend] == "bearish" ? "bearish" : "neutral")
+        bias = if tf_context[:trend] == "bullish"
+                 "bullish"
+               else
+                 (tf_context[:trend] == "bearish" ? "bearish" : "neutral")
+               end
 
         # Determine trend strength (simplified - can enhance with ADX)
         trend_strength = if tf_context[:ema_9] && tf_context[:ema_21]
-                          (tf_context[:ema_9] - tf_context[:ema_21]).abs > (tf_context[:latest_close] * 0.01) ? "strong" : "weak"
-                        else
-                          "unknown"
-                        end
+                           (tf_context[:ema_9] - tf_context[:ema_21]).abs > (tf_context[:latest_close] * 0.01) ? "strong" : "weak"
+                         else
+                           "unknown"
+                         end
 
         # Determine volatility (simplified - can enhance with ATR)
         volatility = "stable" # TODO: Calculate from ATR
@@ -343,28 +347,14 @@ module TaAgent
       end
 
       # LLM Analysis (ONLY AFTER ALL GATES PASS)
-      def analyze_with_llm(tf_15m, tf_5m, tf_1m, options)
-        # Build structured context contracts (NO raw data)
-        structured_context = build_structured_context(tf_15m, tf_5m, tf_1m, options)
-
-        # Check 15m permission gate (hard stop)
-        unless structured_context[:tf_15m][:permission][:options_buying_allowed]
-          return deterministic_recommendation(tf_15m, tf_5m, tf_1m, options).merge(
-            decision: "no_trade",
-            reason: "15m permission denied"
-          )
-        end
-
+      def analyze_with_llm(structured_context)
         # Create tool registry for LLM
         registry = build_tool_registry
-
-        # Create structured input for LLM (trading brief, not raw data)
-        structured_input = structured_context
 
         # Run agent loop
         loop = Loop.new(
           goal: "Cross-validate trading signals and provide confidence score for #{@symbol} options",
-          initial_context: structured_input,
+          initial_context: structured_context,
           tool_registry: registry,
           config: @config
         )
@@ -372,32 +362,38 @@ module TaAgent
         result = loop.run
 
         # Parse LLM output into recommendation
-        parse_llm_recommendation(result, tf_15m, tf_5m, tf_1m, options)
+        parse_llm_recommendation(result, structured_context)
       rescue OllamaError => e
         # LLM failed, fall back to deterministic
-        deterministic_recommendation(tf_15m, tf_5m, tf_1m, options)
+        deterministic_recommendation_from_structured(structured_context)
       end
 
       # Deterministic recommendation (no LLM)
-      def deterministic_recommendation(tf_15m, tf_5m, tf_1m, options)
-        best_strike = options[:candidates].first
+      def deterministic_recommendation_from_structured(structured_context)
+        tf_15m = structured_context[:tf_15m]
+        tf_5m = structured_context[:tf_5m]
+        tf_1m = structured_context[:tf_1m]
+        option_strikes = structured_context[:option_strikes] || []
+
+        best_strike = option_strikes.first
 
         {
-          direction: tf_15m[:bias] == "bullish" ? "CE" : "PE",
+          decision: "enter",
+          direction: tf_15m.dig(:permission, :allowed_direction) || "CE",
           recommended_strike: best_strike&.dig(:strike) || "N/A",
-          entry: tf_1m[:entry_zone] ? "Above #{tf_1m[:entry_zone][:from]}" : "N/A",
-          stop_loss: "Below #{((tf_1m[:latest_close] || 0) * 0.92).round(2)}",
-          target_zone: "#{((tf_1m[:latest_close] || 0) * 1.25).round(2)}–#{((tf_1m[:latest_close] || 0) * 1.45).round(2)}",
+          entry: tf_1m.dig(:entry_zone, :price_from) ? "Above #{tf_1m[:entry_zone][:price_from]}" : "N/A",
+          stop_loss: tf_1m.dig(:risk, :invalid_price) ? "Below #{tf_1m[:risk][:invalid_price]}" : "N/A",
+          target_zone: tf_1m.dig(:risk, :rr_estimate) ? "Calculate from RR" : "N/A",
           confidence: 0.6,
-          notes: "Deterministic analysis: #{tf_15m[:bias]} trend, #{tf_5m[:setup_type]} setup"
+          notes: "Deterministic analysis: #{tf_15m.dig(:trend, :direction)} trend, #{tf_5m.dig(:setup, :type)} setup"
         }
       end
 
       # Parse LLM result into structured recommendation
-      def parse_llm_recommendation(llm_result, tf_15m, tf_5m, tf_1m, options)
+      def parse_llm_recommendation(llm_result, structured_context)
         # TODO: Parse LLM output JSON
         # For now, use deterministic with LLM confidence adjustment
-        base = deterministic_recommendation(tf_15m, tf_5m, tf_1m, options)
+        base = deterministic_recommendation_from_structured(structured_context)
         base[:confidence] = extract_confidence(llm_result[:answer]) || base[:confidence]
         base[:notes] = llm_result[:answer]
         base
@@ -405,9 +401,10 @@ module TaAgent
 
       def extract_confidence(text)
         return nil unless text
-        if match = text.match(/confidence[:\s]+([\d.]+)/i)
-          match[1].to_f / 100.0
-        end
+
+        return unless match = text.match(/confidence[:\s]+([\d.]+)/i)
+
+        match[1].to_f / 100.0
       end
 
       # Build tool registry for LLM
@@ -423,97 +420,13 @@ module TaAgent
             tf_5m: { type: "object", required: true },
             tf_1m: { type: "object", required: true }
           },
-          handler: ->(args) {
+          handler: lambda { |args|
             # Validate alignment logic
             { success: true, data: { aligned: true } }
           }
         )
 
         registry
-      end
-
-      # Build structured context using contracts (NO raw data)
-      def build_structured_context(tf_15m, tf_5m, tf_1m, options)
-        # Build each timeframe context using contracts
-        tf_15m_structured = ContextContracts::TF15MContext.build(
-          tf_15m,
-          indicators: extract_15m_indicators(tf_15m)
-        )
-
-        tf_5m_structured = ContextContracts::TF5MContext.build(
-          tf_5m,
-          indicators: extract_5m_indicators(tf_5m)
-        )
-
-        tf_1m_structured = ContextContracts::TF1MContext.build(
-          tf_1m,
-          indicators: extract_1m_indicators(tf_1m)
-        )
-
-        # Build option strikes (pre-filtered, pre-scored)
-        option_strikes_structured = ContextContracts::OptionStrikesContext.build(
-          options[:candidates] || []
-        )
-
-        # Build market conditions
-        market_conditions_structured = ContextContracts::MarketConditionsContext.build(
-          session_data: {},
-          vix_data: {},
-          event_data: {}
-        )
-
-        {
-          tf_15m: tf_15m_structured,
-          tf_5m: tf_5m_structured,
-          tf_1m: tf_1m_structured,
-          option_strikes: option_strikes_structured,
-          market_conditions: market_conditions_structured
-        }
-      end
-
-      # Extract indicators for 15m (placeholder - implement with actual indicator calculations)
-      def extract_15m_indicators(tf_15m)
-        {
-          adx: nil, # TODO: Calculate ADX
-          di_diff: nil, # TODO: Calculate DI difference
-          last_bos: nil, # TODO: Detect BOS
-          structure_age: nil,
-          atr_trend: "stable", # TODO: Calculate ATR trend
-          range_state: "compression", # TODO: Calculate range state
-          vwap_position: "inside", # TODO: Calculate VWAP position
-          vwap_distance_pct: 0.0 # TODO: Calculate distance from VWAP
-        }
-      end
-
-      # Extract indicators for 5m (placeholder)
-      def extract_5m_indicators(tf_5m)
-        {
-          setup_type: tf_5m[:setup_type],
-          rsi: nil, # TODO: Calculate RSI
-          rsi_trend: "flat",
-          macd_state: "neutral",
-          upper_wick_pct: 0.0,
-          body_pct: 0.0,
-          vwap_state: "inside",
-          vwap_retests: 0,
-          weak_close: false,
-          failed_retest: false,
-          momentum_alignment: tf_5m[:momentum_alignment]
-        }
-      end
-
-      # Extract indicators for 1m (placeholder)
-      def extract_1m_indicators(tf_1m)
-        {
-          trigger_type: tf_1m[:trigger_reason],
-          range_expansion_pct: 0.0,
-          atr_spike: false,
-          consecutive_strong_closes: 0,
-          higher_low: false,
-          lower_wick_dominance: false,
-          rr_estimate: 0.0,
-          forming: tf_1m[:entry_signal] == "forming"
-        }
       end
 
       def gate_failed(gate_name, reason)
@@ -530,3 +443,4 @@ module TaAgent
     end
   end
 end
+

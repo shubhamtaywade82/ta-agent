@@ -2,10 +2,253 @@
 # frozen_string_literal: true
 
 require "bundler/setup"
-require "ta/agent"
 
-# You can add fixtures and/or initialization code here to make experimenting
-# with your gem easier. You can also use a different console, if you like.
+# Add lib to load path for development mode
+lib_path = File.expand_path("../lib", __dir__)
+$LOAD_PATH.unshift(lib_path) unless $LOAD_PATH.include?(lib_path)
+
+require "ta-agent"
+
+# Load LLM modules for easy access
+require_relative "../lib/ta-agent/llm/ollama_client"
+require_relative "../lib/ta-agent/llm/response_parser"
+require_relative "../lib/ta-agent/agent/loop"
+require_relative "../lib/ta-agent/agent/tool_registry"
+
+# Helper methods for Ollama experimentation
+module OllamaHelpers
+  # Quick helper to create an Ollama client
+  def ollama_client(host_url: nil, model: "llama3.2:3b")
+    host_url ||= ENV["OLLAMA_HOST_URL"] || "http://localhost:11434"
+    TaAgent::LLM::OllamaClient.new(host_url: host_url, model: model)
+  end
+
+  # Quick helper to send a simple chat message
+  def chat(message, model: "llama3.2:3b", host_url: nil)
+    client = ollama_client(host_url: host_url, model: model)
+    response = client.chat(
+      messages: [
+        { role: "user", content: message }
+      ]
+    )
+
+    if response && !response[:content].empty?
+      puts response[:content]
+    else
+      puts "⚠️  Empty response received"
+      puts "Full response: #{response.inspect}"
+      puts "Try: test_ollama(model: '#{model}') to debug"
+    end
+    response
+  rescue TaAgent::OllamaError => e
+    puts "❌ Error: #{e.message}"
+    nil
+  end
+
+  # List available Ollama models
+  def list_models(host_url: nil)
+    host_url ||= ENV["OLLAMA_HOST_URL"] || "http://localhost:11434"
+    require "faraday"
+    require "json"
+
+    conn = Faraday.new(url: host_url) do |c|
+      c.request :json
+      c.response :json
+    end
+
+    response = conn.get("/api/tags")
+    unless response.success?
+      puts "❌ Failed to list models: #{response.status} - #{response.body}"
+      return []
+    end
+
+    models = response.body["models"] || []
+    if models.empty?
+      puts "⚠️  No models found. Pull a model with: ollama pull <model-name>"
+    else
+      puts "📋 Available models:"
+      models.each do |model|
+        name = model["name"] || model[:name] || "unknown"
+        size = model["size"] || model[:size]
+        size_str = size ? " (#{(size / 1024.0 / 1024.0 / 1024.0).round(2)} GB)" : ""
+        puts "  • #{name}#{size_str}"
+      end
+    end
+
+    models.map { |m| m["name"] || m[:name] }.compact
+  rescue Faraday::ConnectionFailed, Faraday::TimeoutError => e
+    puts "❌ Connection failed: #{e.message}"
+    puts "Make sure Ollama is running at #{host_url}"
+    []
+  rescue StandardError => e
+    puts "❌ Error listing models: #{e.message}"
+    []
+  end
+
+  # Quick helper to test Ollama connection
+  def test_ollama(host_url: nil, model: "llama3.2:3b", auto_find_model: true)
+    host_url ||= ENV["OLLAMA_HOST_URL"] || "http://localhost:11434"
+    puts "Testing Ollama connection..."
+    puts "Host: #{host_url}"
+    puts "Model: #{model}"
+
+    begin
+      client = ollama_client(host_url: host_url, model: model)
+      response = client.chat(
+        messages: [
+          { role: "user", content: "Say 'Hello' if you can hear me." }
+        ]
+      )
+
+      if response && !response[:content].empty?
+        puts "✅ Ollama connection successful!"
+        puts "Response: #{response[:content]}"
+        return response
+      else
+        puts "⚠️  Ollama responded but content is empty"
+        puts "Full response: #{response.inspect}"
+      end
+    rescue TaAgent::OllamaError => e
+      error_msg = e.message
+      puts "❌ Model '#{model}' not found: #{error_msg}"
+
+      # Try to find an available model if auto_find_model is enabled
+      if auto_find_model && error_msg.include?("not found")
+        puts "\n🔍 Searching for available models..."
+        available_models = list_models(host_url: host_url)
+
+        if available_models.any?
+          first_model = available_models.first
+          puts "\n✨ Trying with first available model: #{first_model}"
+          return test_ollama(host_url: host_url, model: first_model, auto_find_model: false)
+        else
+          puts "\n💡 Pull a model with: ollama pull #{model}"
+          puts "   Or try: ollama pull llama2"
+        end
+      end
+
+      puts "\nMake sure Ollama is running at #{host_url}"
+      puts "Start Ollama with: ollama serve"
+      return nil
+    end
+
+    nil
+  end
+
+  # Quick helper to create an agent loop
+  def agent_loop(goal:, initial_context: {}, mode: :alert)
+    config = TaAgent::Config.instance
+    registry = TaAgent::Agent::ToolRegistry.new(mode: mode)
+    TaAgent::Agent::Loop.new(
+      goal: goal,
+      initial_context: initial_context,
+      tool_registry: registry,
+      config: config
+    )
+  end
+
+  # Debug helper to see raw Ollama response
+  def debug_ollama_response(message: "Hello", model: "llama3.2:3b", host_url: nil)
+    host_url ||= ENV["OLLAMA_HOST_URL"] || "http://localhost:11434"
+
+    # Make raw request to see actual response
+    require "faraday"
+    require "json"
+    conn = Faraday.new(url: host_url) do |c|
+      c.request :json
+      c.response :json
+    end
+
+    payload = {
+      model: model,
+      messages: [{ role: "user", content: message }],
+      stream: false
+    }
+
+    puts "=" * 60
+    puts "DEBUG: Ollama API Request"
+    puts "=" * 60
+    puts "URL: #{host_url}/api/chat"
+    puts "Model: #{model}"
+    puts "Payload:"
+    puts JSON.pretty_generate(payload)
+    puts "\n"
+
+    response = conn.post("/api/chat") do |req|
+      req.body = payload.to_json
+      req.headers["Content-Type"] = "application/json"
+    end
+
+    puts "=" * 60
+    puts "DEBUG: Raw Response"
+    puts "=" * 60
+    puts "Status: #{response.status}"
+    puts "Body (raw):"
+    puts JSON.pretty_generate(response.body)
+    puts "\n"
+
+    # Now test with the client
+    puts "=" * 60
+    puts "DEBUG: Parsed by OllamaClient"
+    puts "=" * 60
+    client = ollama_client(host_url: host_url, model: model)
+    parsed = client.chat(messages: [{ role: "user", content: message }])
+    puts parsed.inspect
+    puts "\n"
+
+    # Show structure analysis
+    puts "=" * 60
+    puts "DEBUG: Structure Analysis"
+    puts "=" * 60
+    body = response.body
+    puts "Has 'message' key? #{body.key?("message") || body.key?(:message)}"
+    if body["message"] || body[:message]
+      msg = body["message"] || body[:message]
+      puts "Message type: #{msg.class}"
+      puts "Message keys: #{msg.keys.inspect}" if msg.is_a?(Hash)
+      puts "Has 'content'? #{msg.key?("content") || msg.key?(:content)}" if msg.is_a?(Hash)
+    end
+
+    response.body
+  end
+end
+
+# Include helpers in main scope
+include OllamaHelpers
+
+# Print welcome message with examples
+puts <<~WELCOME
+  🚀 ta-agent Console - Ollama Integration Ready
+
+  Quick Start:
+  ------------
+  # List available models
+  list_models
+
+  # Test Ollama connection (auto-finds model if needed)
+  test_ollama
+
+  # Simple chat
+  chat("What is technical analysis?")
+
+  # Create Ollama client
+  client = ollama_client(model: "llama3.2:3b")
+  response = client.chat(messages: [{ role: "user", content: "Hello!" }])
+
+  # Create agent loop
+  loop = agent_loop(goal: "Analyze NIFTY", initial_context: { symbol: "NIFTY" })
+  result = loop.run
+
+  Available Classes:
+  ------------------
+  - TaAgent::LLM::OllamaClient      # Direct Ollama API client
+  - TaAgent::LLM::ResponseParser    # Parse LLM responses
+  - TaAgent::Agent::Loop             # Agent loop (ReAct pattern)
+  - TaAgent::Agent::ToolRegistry     # Tool registry for agent
+  - TaAgent::Config                  # Configuration
+
+  Type 'help' for more info or start experimenting!
+WELCOME
 
 require "irb"
 IRB.start(__FILE__)

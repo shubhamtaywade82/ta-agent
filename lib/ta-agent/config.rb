@@ -69,7 +69,7 @@ module TaAgent
     end
 
     def ollama_model
-      @ollama_model || "mistral"
+      @ollama_model || "llama3.2:3b"
     end
 
     def default_symbol

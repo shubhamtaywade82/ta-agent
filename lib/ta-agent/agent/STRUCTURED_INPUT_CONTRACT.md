@@ -247,3 +247,5 @@ If you pass:
 
 This structure is **how institutional systems talk to humans**.
 Your LLM is replacing the human analyst — **not the trading engine**.
+
+

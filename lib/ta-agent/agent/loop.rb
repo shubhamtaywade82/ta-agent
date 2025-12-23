@@ -42,7 +42,7 @@ module TaAgent
         @config = config || TaAgent::Config.instance
         @state = LoopState.new(goal: goal, initial_context: initial_context)
         @llm_client = nil
-        @response_parser = ResponseParser.new
+        @response_parser = TaAgent::LLM::ResponseParser.new
       end
 
       # Run the agent loop
@@ -85,12 +85,12 @@ module TaAgent
       private
 
       def initialize_llm_client
-        @llm_client = OllamaClient.new(
+        @llm_client = TaAgent::LLM::OllamaClient.new(
           host_url: @config.ollama_host_url,
           model: @config.ollama_model
         )
       rescue StandardError => e
-        raise OllamaError, "Failed to initialize LLM client: #{e.message}"
+        raise TaAgent::OllamaError, "Failed to initialize LLM client: #{e.message}"
       end
 
       def get_llm_response
@@ -175,3 +175,6 @@ module TaAgent
     end
   end
 end
+
+
+

@@ -280,18 +280,86 @@ module TaAgent
         puts "\n[Watch] Starting interactive monitoring for #{symbol} (interval: #{interval}s)"
         puts "Press Ctrl+C to stop\n"
 
+        # Load config
+        begin
+          config = TaAgent::Config.load
+        rescue TaAgent::ConfigurationError => e
+          puts "Error: #{e.message}"
+          return
+        end
+
+        symbol = symbol.upcase
+        require_relative "../agent/runner"
+
+        previous_state = nil
+        iteration = 0
+
         begin
           loop do
+            iteration += 1
             spinner = TTY::Spinner.new("[:spinner] Monitoring #{symbol}...", format: :dots)
             spinner.auto_spin
 
-            # TODO: Implement actual watch logic
-            sleep(interval)
+            # Run analysis
+            begin
+              runner = TaAgent::Agent::Runner.new(symbol: symbol, config: config)
+              result = runner.run
+              spinner.stop("Analysis complete")
 
-            spinner.stop("Update received")
+              # Check if state changed
+              current_state = build_state_summary(result)
+              state_changed = previous_state.nil? || state_different?(previous_state, current_state)
 
-            # Show update (placeholder)
-            puts "  [#{Time.now.strftime('%H:%M:%S')}] #{symbol}: Status check - Implementation pending"
+              if state_changed || iteration == 1
+                puts "\n" + "=" * 60
+                puts "[#{Time.now.strftime('%H:%M:%S')}] Update ##{iteration} - #{symbol}"
+                puts "=" * 60
+
+                # Show errors if any
+                if result[:errors].any?
+                  puts "\n⚠ Errors:"
+                  result[:errors].each { |error| puts "  - #{error}" }
+                end
+
+                # Show timeframe status
+                puts "\nTimeframes:"
+                result[:timeframes].each do |tf_key, tf_data|
+                  tf_name = tf_key.to_s.gsub(/^tf_/, "").upcase
+                  status = tf_data[:status] || "pending"
+                  puts "  #{tf_name}: #{status}"
+                end
+
+                # Show recommendation if available
+                if result[:recommendation]
+                  rec = result[:recommendation]
+                  puts "\nRecommendation: #{rec[:action].upcase}"
+                  puts "  #{rec[:reason]}"
+                  if rec[:strike]
+                    puts "  Strike: #{rec[:strike]}"
+                    puts "  Entry: #{rec[:entry]}" if rec[:entry]
+                    puts "  Stop Loss: #{rec[:stop_loss]}" if rec[:stop_loss]
+                    puts "  Target: #{rec[:target]}" if rec[:target]
+                  end
+                  puts "  Confidence: #{(result[:confidence] * 100).round(1)}%"
+                else
+                  puts "\nNo recommendation available"
+                end
+
+                puts "=" * 60
+              else
+                spinner.stop("No changes detected")
+                puts "  [#{Time.now.strftime('%H:%M:%S')}] No significant changes"
+              end
+
+              previous_state = current_state
+
+            rescue StandardError => e
+              spinner.stop("Error!")
+              puts "\n[#{Time.now.strftime('%H:%M:%S')}] Error: #{e.message}"
+              if @global_opts[:debug]
+                puts e.backtrace.join("\n")
+              end
+            end
 
             # Ask if user wants to continue
             continue = @prompt.yes?("Continue monitoring?")
@@ -300,6 +368,23 @@ module TaAgent
         rescue Interrupt
           puts "\n\nMonitoring stopped."
         end
+      end
+
+      def build_state_summary(result)
+        {
+          recommendation: result[:recommendation]&.dig(:action),
+          confidence: result[:confidence]&.round(2),
+          timeframes: result[:timeframes]&.transform_values { |v| v[:status] },
+          errors: result[:errors]&.any?
+        }
+      end
+
+      def state_different?(prev, curr)
+        return true if prev[:recommendation] != curr[:recommendation]
+        return true if (prev[:confidence] || 0).round(2) != (curr[:confidence] || 0).round(2)
+        return true if prev[:timeframes] != curr[:timeframes]
+        return true if prev[:errors] != curr[:errors]
+        false
       end
     end
   end
