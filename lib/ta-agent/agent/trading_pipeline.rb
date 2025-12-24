@@ -6,6 +6,7 @@ require_relative "gates"
 require_relative "tool_registry"
 require_relative "loop"
 require_relative "context_contracts"
+require_relative "../market/session"
 require_relative "../tools/timeframe_context_builders"
 require_relative "../tools/option_chain_tools"
 require_relative "../tools/risk_tools"
@@ -116,7 +117,10 @@ module TaAgent
       # Output: { bias, trend_strength, volatility, trade_allowed }
       def build_15m_context
         to_date = Date.today
-        from_date = to_date - 30
+        # For intraday data: from_date <= today - 1 OR last trading date, to_date == today
+        min_from_date = Market::Session.last_trading_date
+        historical_from_date = to_date - 30
+        from_date = [min_from_date, historical_from_date].min
 
         ohlcv_data = @dhanhq_client.fetch_ohlcv(
           symbol: @symbol,
@@ -184,7 +188,10 @@ module TaAgent
       # Output: { setup_type, momentum_alignment, invalidations, proceed_to_entry }
       def build_5m_context
         to_date = Date.today
-        from_date = to_date - 7
+        # For intraday data: from_date <= today - 1 OR last trading date, to_date == today
+        min_from_date = Market::Session.last_trading_date
+        historical_from_date = to_date - 7
+        from_date = [min_from_date, historical_from_date].min
 
         ohlcv_data = @dhanhq_client.fetch_ohlcv(
           symbol: @symbol,
@@ -276,7 +283,8 @@ module TaAgent
       # Output: { entry_signal, trigger_reason, entry_zone }
       def build_1m_context
         to_date = Date.today
-        from_date = to_date - 1
+        # For 1m intraday: from_date <= today - 1 OR last trading date, to_date == today
+        from_date = Market::Session.last_trading_date
 
         ohlcv_data = @dhanhq_client.fetch_ohlcv(
           symbol: @symbol,

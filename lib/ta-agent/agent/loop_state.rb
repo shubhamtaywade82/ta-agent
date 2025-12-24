@@ -17,10 +17,10 @@
 module TaAgent
   module Agent
     class LoopState
-      MAX_STEPS = 10
+      MAX_STEPS = 3
       MAX_MEMORY_ITEMS = 50
 
-      attr_reader :goal, :step_count, :memory, :last_tool_result, :conversation_history
+      attr_reader :goal, :step_count, :memory, :last_tool_result, :conversation_history, :tool_cache
 
       def initialize(goal:, initial_context: {})
         @goal = goal
@@ -30,6 +30,7 @@ module TaAgent
         @conversation_history = []
         @initial_context = initial_context
         @stop_reason = nil
+        @tool_cache = {} # Cache for tool results: { cache_key => result }
       end
 
       # Add LLM response to conversation
@@ -63,17 +64,41 @@ module TaAgent
 
         # Store concise tool result to reduce token usage
         tool_content = if result[:success] && result[:data]
-                         # Extract only essential data
+                         # Extract essential data including recommendation and stop signals
                          essential_data = if result[:data].is_a?(Hash)
-                                            result[:data].slice(:status, :trend, :recommendation, :confidence, :suitable, :value,
-                                                                :error).compact
+                                            # Build data hash with all important fields
+                                            data_hash = {}
+
+                                            # Always include these fields if they exist
+                                            %i[symbol timeframes recommendation confidence timestamp errors
+                                               status trend suitable value error stop_calling_tools message has_data].each do |key|
+                                              data_hash[key] = result[:data][key] if result[:data].key?(key)
+                                            end
+
+                                            # Ensure recommendation is fully included (it's a hash, so include all its keys)
+                                            if result[:data][:recommendation]
+                                              data_hash[:recommendation] = result[:data][:recommendation]
+                                            end
+
+                                            # Ensure timeframes is included (it's a hash, so include all its keys)
+                                            if result[:data][:timeframes]
+                                              data_hash[:timeframes] = result[:data][:timeframes]
+                                            end
+
+                                            # Add explicit success indicator
+                                            data_hash[:tool_execution_status] = "SUCCESS"
+                                            data_hash[:data_available] = true
+                                            data_hash
                                           else
-                                            result[:data]
+                                            { tool_execution_status: "SUCCESS", data_available: true,
+                                              value: result[:data] }
                                           end
-                         { success: true, data: essential_data }.to_json
+                         { success: true, status: "SUCCESS", data: essential_data,
+                           message: "Tool executed successfully. Data is available below." }.to_json
                        else
                          # Keep error messages concise
-                         { success: false, error: result[:error] || "Unknown error" }.to_json
+                         { success: false, status: "ERROR", error: result[:error] || "Unknown error",
+                           message: "Tool execution failed." }.to_json
                        end
 
         new_state.conversation_history << {
@@ -160,9 +185,55 @@ module TaAgent
         prompt_parts.join("\n")
       end
 
+      # Generate cache key from tool name and arguments
+      # @param tool_name [Symbol, String] Tool name
+      # @param arguments [Hash] Tool arguments
+      # @return [String] Cache key
+      def cache_key(tool_name, arguments)
+        # Normalize arguments: convert to hash, sort keys, normalize symbol values
+        normalized_args = if arguments.is_a?(Hash)
+                            args_hash = {}
+                            arguments.each do |k, v|
+                              key = k.is_a?(Symbol) ? k.to_s : k.to_s
+                              # Normalize symbol values (e.g., "SENSEX" vs "sensex")
+                              value = if v.is_a?(String) && v.match?(/^[A-Z0-9]+$/)
+                                        v.upcase
+                                      else
+                                        v
+                                      end
+                              args_hash[key] = value
+                            end
+                            # Sort keys for consistent cache keys
+                            args_hash.sort.to_h
+                          else
+                            arguments
+                          end
+
+        # Create cache key: tool_name + sorted normalized arguments
+        "#{tool_name}:#{normalized_args.to_json}"
+      end
+
+      # Get cached tool result if available
+      # @param tool_name [Symbol, String] Tool name
+      # @param arguments [Hash] Tool arguments
+      # @return [Hash, nil] Cached result or nil
+      def get_cached_result(tool_name, arguments)
+        key = cache_key(tool_name, arguments)
+        @tool_cache[key]
+      end
+
+      # Store tool result in cache
+      # @param tool_name [Symbol, String] Tool name
+      # @param arguments [Hash] Tool arguments
+      # @param result [Hash] Tool result
+      def cache_result(tool_name, arguments, result)
+        key = cache_key(tool_name, arguments)
+        @tool_cache[key] = result
+      end
+
       protected
 
-      attr_writer :step_count, :memory, :last_tool_result, :conversation_history
+      attr_writer :step_count, :memory, :last_tool_result, :conversation_history, :tool_cache
     end
   end
 end

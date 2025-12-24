@@ -26,7 +26,8 @@ module TaAgent
         "NIFTY" => "IDX_I",
         "BANKNIFTY" => "IDX_I",
         "FINNIFTY" => "IDX_I",
-        "MIDCPNIFTY" => "IDX_I"
+        "MIDCPNIFTY" => "IDX_I",
+        "SENSEX" => "IDX_I"
       }.freeze
 
       def initialize(client_id:, access_token:)
@@ -52,14 +53,11 @@ module TaAgent
         from = normalize_date(from_date)
         to = normalize_date(to_date)
 
-        # Fetch intraday data
-        data = ::DhanHQ::Models::HistoricalData.intraday(
-          security_id: instrument.security_id,
-          exchange_segment: instrument.exchange_segment,
-          instrument: instrument.instrument,
-          interval: interval,
+        # Fetch intraday data using instrument.intraday method
+        data = instrument.intraday(
           from_date: from,
-          to_date: to
+          to_date: to,
+          interval: interval
         )
 
         # Transform to array of hashes
@@ -72,17 +70,37 @@ module TaAgent
 
       # Fetch option chain for a symbol
       # @param symbol [String] Symbol name
-      # @return [Hash] Option chain data
-      def fetch_option_chain(symbol:)
+      # @param expiry [Date, String, nil] Expiry date (optional, defaults to nearest expiry)
+      # @return [Hash] Option chain data with :strikes, :expiry_dates, :symbol
+      def fetch_option_chain(symbol:, expiry: nil)
         instrument = find_instrument(symbol)
         raise DhanHQError, "Instrument not found for symbol: #{symbol}" unless instrument
 
-        # TODO: Implement option chain fetch when DhanHQ API is available
-        # For now, return empty structure
+        # Get available expiries
+        expiries = instrument.expiry_list
+
+        # If no expiry specified, use the nearest one (first in list)
+        expiry_date = if expiry
+                        normalize_date(expiry)
+                      elsif expiries&.any?
+                        expiries.first
+                      else
+                        nil
+                      end
+
+        # Fetch option chain for the specified expiry
+        chain_data = if expiry_date
+                       instrument.option_chain(expiry: expiry_date)
+                     else
+                       { strikes: [], expiries: [] }
+                     end
+
+        # Transform to expected format
         {
           symbol: symbol,
-          strikes: [],
-          expiry_dates: []
+          strikes: chain_data[:strikes] || chain_data[:strike] || [],
+          expiry_dates: expiries || [],
+          selected_expiry: expiry_date
         }
       rescue ::DhanHQ::Error => e
         raise DhanHQError, "DhanHQ API error for #{symbol}: #{e.message}"
@@ -92,17 +110,42 @@ module TaAgent
 
       # Fetch current market data
       # @param symbol [String] Symbol name
-      # @return [Hash] Current market data
+      # @return [Hash] Current market data with :last_price, :open, :high, :low, :close, :volume, :change, :change_percent
       def fetch_quote(symbol:)
         instrument = find_instrument(symbol)
         raise DhanHQError, "Instrument not found for symbol: #{symbol}" unless instrument
 
-        # TODO: Implement quote fetch when DhanHQ API is available
+        # Fetch LTP (Last Traded Price)
+        ltp_data = instrument.ltp
+
+        # Fetch OHLC data
+        ohlc_data = instrument.ohlc
+
+        # Fetch full quote (if needed for depth)
+        quote_data = instrument.quote
+
+        # Extract relevant data
+        last_price = ltp_data[:ltp] || ltp_data[:last_price] || quote_data[:ltp] || quote_data[:last_price]
+        open_price = ohlc_data[:open] || quote_data[:open]
+        high_price = ohlc_data[:high] || quote_data[:high]
+        low_price = ohlc_data[:low] || quote_data[:low]
+        close_price = ohlc_data[:close] || quote_data[:close] || quote_data[:previous_close]
+        volume = ohlc_data[:volume] || quote_data[:volume]
+
+        # Calculate change
+        change = last_price && close_price ? last_price - close_price : nil
+        change_percent = change && close_price && close_price != 0 ? (change / close_price * 100).round(2) : nil
+
         {
           symbol: symbol,
-          last_price: nil,
-          change: nil,
-          change_percent: nil
+          last_price: last_price,
+          open: open_price,
+          high: high_price,
+          low: low_price,
+          close: close_price,
+          volume: volume,
+          change: change,
+          change_percent: change_percent
         }
       rescue ::DhanHQ::Error => e
         raise DhanHQError, "DhanHQ API error for #{symbol}: #{e.message}"
@@ -114,13 +157,29 @@ module TaAgent
       # @param symbol [String] Symbol name
       # @return [DhanHQ::Models::Instrument, nil] Instrument or nil if not found
       def find_instrument(symbol)
+        symbol_up = symbol.upcase
+
         # Try common segments first for known indices
-        if SYMBOL_SEGMENTS.key?(symbol.upcase)
-          segment = SYMBOL_SEGMENTS[symbol.upcase]
-          ::DhanHQ::Models::Instrument.find(segment, symbol.upcase, exact_match: true)
+        if SYMBOL_SEGMENTS.key?(symbol_up)
+          segment = SYMBOL_SEGMENTS[symbol_up]
+          ::DhanHQ::Models::Instrument.find(segment, symbol_up)
         else
-          # Search across all segments
-          ::DhanHQ::Models::Instrument.find_anywhere(symbol.upcase, exact_match: true)
+          # Try common segments for unknown symbols
+          # First try IDX_I (indices), then NSE_EQ (equity)
+          %w[IDX_I NSE_EQ].each do |segment|
+            instrument = ::DhanHQ::Models::Instrument.find(segment, symbol_up)
+            return instrument if instrument
+          rescue StandardError
+            # Continue to next segment
+            next
+          end
+
+          # If not found, try find_anywhere if available
+          if ::DhanHQ::Models::Instrument.respond_to?(:find_anywhere)
+            ::DhanHQ::Models::Instrument.find_anywhere(symbol_up)
+          else
+            nil
+          end
         end
       end
 
@@ -150,11 +209,26 @@ module TaAgent
       end
 
       def transform_ohlcv_data(data)
+        return [] if data.nil?
+
+        # Handle array of hashes format (if API returns directly)
+        if data.is_a?(Array) && data.first.is_a?(Hash)
+          return data.map do |item|
+            {
+              timestamp: normalize_timestamp(item[:timestamp] || item[:time] || item[:date]),
+              open: item[:open].to_f,
+              high: item[:high].to_f,
+              low: item[:low].to_f,
+              close: item[:close].to_f,
+              volume: (item[:volume] || 0).to_i
+            }
+          end
+        end
+
+        # Handle hash with arrays format: {open: [...], high: [...], close: [...], ...}
         return [] unless data.is_a?(Hash)
 
-        # DhanHQ returns data as arrays: {open: [...], high: [...], close: [...], ...}
-        # Transform to array of hashes
-        timestamps = data[:timestamp] || []
+        timestamps = data[:timestamp] || data[:time] || []
         opens = data[:open] || []
         highs = data[:high] || []
         lows = data[:low] || []
@@ -166,16 +240,35 @@ module TaAgent
 
         (0...length).each do |i|
           result << {
-            timestamp: Time.at(timestamps[i]).to_i,
+            timestamp: normalize_timestamp(timestamps[i]),
             open: opens[i].to_f,
             high: highs[i].to_f,
             low: lows[i].to_f,
             close: closes[i].to_f,
-            volume: volumes[i].to_i
+            volume: (volumes[i] || 0).to_i
           }
         end
 
         result
+      end
+
+      def normalize_timestamp(timestamp)
+        return Time.now.to_i if timestamp.nil?
+
+        case timestamp
+        when Integer
+          # If it's already a Unix timestamp, return as is
+          timestamp
+        when String
+          # Try parsing as ISO8601 or date string
+          Time.parse(timestamp).to_i
+        when Time
+          timestamp.to_i
+        when Date
+          timestamp.to_time.to_i
+        else
+          Time.now.to_i
+        end
       end
     end
   end

@@ -164,6 +164,7 @@ module TaAgent
                 @logger.debug "   Arguments: #{tool_call_from_text[:arguments].inspect}"
                 # It's actually a tool call - execute it
                 tool_result = execute_tool(tool_call_from_text[:name].to_sym, tool_call_from_text[:arguments] || {})
+                pp tool_result
                 @state = @state.add_tool_result(tool_call_from_text[:name].to_sym, tool_result)
 
                 # Check for errors - but allow more retries before stopping
@@ -253,6 +254,50 @@ module TaAgent
 
           # 5. Execute tool if LLM requested one
           if response[:type] == "tool_call" && response[:tool_name]
+            # Check if we already have recommendation data - if so, prevent more tool calls
+            has_recommendation = @state.memory.any? do |m|
+              m.dig(:result, :success) &&
+                m.dig(:result, :data, :recommendation) &&
+                [:fetch_market_data, "fetch_market_data"].include?(m[:tool])
+            end
+
+            if has_recommendation && [:fetch_market_data, "fetch_market_data"].include?(response[:tool_name])
+              @logger.warn "⚠️  LLM trying to call fetch_market_data again, but recommendation already exists - forcing stop"
+              # Return a message telling LLM to stop
+              return build_final_result("Recommendation data already available. LLM should provide final analysis instead of calling more tools.")
+            end
+
+            # Check cache first - reuse result if we've called this exact tool with same parameters
+            cached_result = @state.get_cached_result(response[:tool_name], response[:arguments] || {})
+
+            if cached_result
+              @logger.info "💾 Using cached result for #{response[:tool_name]}"
+              @logger.debug "   Cache key: #{@state.cache_key(response[:tool_name], response[:arguments] || {})}"
+
+              # Check if cached result has recommendation - if so, force LLM to stop calling tools
+              if cached_result[:success] &&
+                 cached_result[:data] &&
+                 cached_result[:data].is_a?(Hash) &&
+                 cached_result[:data][:recommendation]
+                @logger.warn "⚠️  Cached result already contains recommendation - LLM should provide final answer now"
+                # Add a special message to force the LLM to stop
+                tool_result = cached_result.dup
+                # Enhance the result with a stop signal
+                if tool_result[:data]
+                  tool_result[:data] = tool_result[:data].dup
+                  tool_result[:data][:stop_calling_tools] = true
+                  tool_result[:data][:message] =
+                    "You already have all the data you need including recommendation. STOP calling tools and provide your final analysis now."
+                end
+              else
+                tool_result = cached_result
+              end
+
+              @state = @state.add_tool_result(response[:tool_name], tool_result)
+              # Continue loop to get next LLM response with cached result
+              next
+            end
+
             @logger.info "🔧 Executing tool: #{response[:tool_name]}"
             @logger.info "   Parameters: #{response[:arguments].inspect}"
             if response[:arguments] && !response[:arguments].empty?
@@ -260,6 +305,11 @@ module TaAgent
             end
 
             tool_result = execute_tool(response[:tool_name], response[:arguments])
+
+            # Cache the result for future use
+            @state.cache_result(response[:tool_name], response[:arguments] || {}, tool_result)
+            @logger.debug "💾 Cached result for #{response[:tool_name]}"
+
             @state = @state.add_tool_result(response[:tool_name], tool_result)
 
             # Log tool result
@@ -273,6 +323,15 @@ module TaAgent
                                    tool_result[:data].inspect[0..200]
                                  end
                   @logger.debug "   Result data keys: #{data_preview}"
+
+                  # If fetch_market_data returned recommendation, log it prominently
+                  if [:fetch_market_data, "fetch_market_data"].include?(response[:tool_name]) &&
+                     tool_result[:data].is_a?(Hash) &&
+                     tool_result[:data][:recommendation]
+                    rec = tool_result[:data][:recommendation]
+                    @logger.info "📊 Recommendation available: #{rec[:trend]} trend, Action: #{rec[:action]}"
+                    @logger.info "   💡 LLM should now provide final analysis - no need to call fetch_market_data again"
+                  end
                 end
               else
                 @logger.error "❌ Tool '#{response[:tool_name]}' failed: #{tool_result[:error]}"
@@ -366,6 +425,43 @@ module TaAgent
         @logger.debug "📥 LLM response received in #{elapsed.round(2)}s"
         @logger.debug "   Raw response keys: #{raw_response.keys.join(", ")}"
 
+        # Debug: Log what messages we're sending to LLM (especially tool results)
+        if @logger.respond_to?(:debug)
+          messages = build_messages(prompt)
+          @logger.debug "📤 Messages being sent to LLM (#{messages.length} total):"
+          messages.each_with_index do |msg, idx|
+            if msg[:role] == "tool"
+              # Show full tool content, not truncated
+              content_str = if msg[:content].is_a?(String)
+                              msg[:content]
+                            else
+                              require "json"
+                              begin
+                                JSON.pretty_generate(msg[:content])
+                              rescue StandardError
+                                msg[:content].inspect
+                              end
+                            end
+              # Only show first 500 chars in debug, but indicate if truncated
+              if content_str.length > 500
+                @logger.debug "   [#{idx}] Tool: #{msg[:name]} - #{content_str[0..500]}... (#{content_str.length} total chars)"
+              else
+                @logger.debug "   [#{idx}] Tool: #{msg[:name]} - #{content_str}"
+              end
+            elsif msg[:role] == "system"
+              @logger.debug "   [#{idx}] System: (prompt, #{msg[:content].length} chars)"
+            else
+              # Show more of user/assistant content in debug
+              content_preview = msg[:content].is_a?(String) ? msg[:content] : msg[:content].inspect
+              if content_preview.length > 200
+                @logger.debug "   [#{idx}] #{msg[:role]}: #{content_preview[0..200]}... (#{content_preview.length} total chars)"
+              else
+                @logger.debug "   [#{idx}] #{msg[:role]}: #{content_preview}"
+              end
+            end
+          end
+        end
+
         # Parse response
         parsed = @response_parser.parse(raw_response)
         @logger.debug "   Parsed type: #{parsed[:type]}"
@@ -395,25 +491,92 @@ module TaAgent
               tool_result = JSON.parse(content)
               # Summarize tool results to reduce tokens
               if tool_result.is_a?(Hash)
-                if tool_result[:success]
-                  # Show only key data, not full response
-                  summary = if tool_result[:data]
-                              # Extract key fields only
-                              data_summary = if tool_result[:data].is_a?(Hash)
-                                               tool_result[:data].slice(:status, :trend, :recommendation, :confidence,
-                                                                        :suitable).compact
+                success = tool_result["success"] || tool_result[:success]
+                status = tool_result["status"] || tool_result[:status] || (success ? "SUCCESS" : "ERROR")
+
+                if success
+                  # Show key data including timeframes for market data
+                  summary = if tool_result["data"] || tool_result[:data]
+                              data = tool_result["data"] || tool_result[:data]
+                              # Extract key fields including timeframes
+                              data_summary = if data.is_a?(Hash)
+                                               # For fetch_market_data, include timeframes and recommendation
+                                               if data[:timeframes] || data["timeframes"]
+                                                 # Summarize timeframes but keep essential info
+                                                 tf_summary = {}
+                                                 timeframes = data[:timeframes] || data["timeframes"] || {}
+                                                 timeframes.each do |tf_key, tf_data|
+                                                   tf_data_hash = tf_data.is_a?(Hash) ? tf_data : {}
+                                                   tf_summary[tf_key] = {
+                                                     status: tf_data_hash[:status] || tf_data_hash["status"],
+                                                     trend: tf_data_hash[:trend] || tf_data_hash["trend"],
+                                                     ema_9: tf_data_hash[:ema_9] || tf_data_hash["ema_9"],
+                                                     ema_21: tf_data_hash[:ema_21] || tf_data_hash["ema_21"],
+                                                     latest_close: tf_data_hash[:latest_close] || tf_data_hash["latest_close"]
+                                                   }.compact
+                                                 end
+                                                 # Include full recommendation details so LLM can see it
+                                                 rec = data[:recommendation] || data["recommendation"]
+                                                 rec_summary = if rec.is_a?(Hash)
+                                                                 rec_hash = rec
+                                                                 {
+                                                                   action: rec_hash[:action] || rec_hash["action"],
+                                                                   trend: rec_hash[:trend] || rec_hash["trend"],
+                                                                   option_type: rec_hash[:option_type] || rec_hash["option_type"],
+                                                                   strike: rec_hash[:strike] || rec_hash["strike"],
+                                                                   premium: rec_hash[:premium] || rec_hash["premium"],
+                                                                   target_1: rec_hash[:target_1] || rec_hash["target_1"],
+                                                                   target_2: rec_hash[:target_2] || rec_hash["target_2"],
+                                                                   stop_loss: rec_hash[:stop_loss] || rec_hash["stop_loss"],
+                                                                   reason: rec_hash[:reason] || rec_hash["reason"]
+                                                                 }.compact
+                                                               else
+                                                                 rec
+                                                               end
+                                                 {
+                                                   success: true,
+                                                   status: "SUCCESS",
+                                                   symbol: data[:symbol] || data["symbol"],
+                                                   timeframes: tf_summary,
+                                                   recommendation: rec_summary,
+                                                   confidence: data[:confidence] || data["confidence"],
+                                                   has_data: true,
+                                                   stop_calling_tools: true,
+                                                   message: "✅ COMPLETE DATA RECEIVED! Tool executed SUCCESSFULLY. You now have: symbol, timeframes (15m, 5m, 1m), indicators (EMA, trend), and recommendation (action, strike, premium, targets). STOP calling tools immediately and provide your final analysis with the recommendation details."
+                                                 }.compact
+                                               else
+                                                 # For other tools, use original slice
+                                                 data.slice(:status, :trend, :recommendation, :confidence,
+                                                            :suitable).compact
+                                               end
                                              else
                                                "Success"
                                              end
-                              "Success: #{data_summary.to_json}"
+                              # Format as clear success message with data
+                              result_hash = {
+                                success: true,
+                                status: status,
+                                message: "Tool executed SUCCESSFULLY. Data retrieved successfully.",
+                                data: data_summary
+                              }
+                              result_hash.to_json
                             else
-                              "Success"
+                              {
+                                success: true,
+                                status: status,
+                                message: "Tool executed SUCCESSFULLY."
+                              }.to_json
                             end
                   content = summary
                 else
                   # Keep error messages concise
-                  error_msg = tool_result[:error] || "Error"
-                  content = "Error: #{error_msg}"
+                  error_msg = tool_result["error"] || tool_result[:error] || "Error"
+                  content = {
+                    success: false,
+                    status: status,
+                    error: error_msg,
+                    message: "Tool execution FAILED."
+                  }.to_json
                 end
               end
             rescue JSON::ParserError
@@ -460,34 +623,49 @@ module TaAgent
           - What data do you need to answer the question?
 
           **Step 2: ACT** (if needed)
-          - If analyzing a symbol (NIFTY, SENSEX, etc.), FIRST call `fetch_market_data` with the symbol
+          - If analyzing a symbol (NIFTY, SENSEX, etc.), call `fetch_market_data` ONCE with the symbol
+          - **CRITICAL: After `fetch_market_data` returns, check if it contains:**
+            * `timeframes` (15m, 5m, 1m data)
+            * `recommendation` (action, trend, strike, premium, targets)
+            * If YES → You have COMPLETE data → STOP calling tools → Provide final analysis
+            * If NO → Call additional tools only if truly needed
           - Call ONE tool at a time, wait for results
           - Use validation tools ONLY if you have the required data
 
           **Step 3: PLAN**
-          - After each tool result, decide: continue, final answer, or insufficient data
-          - If you have enough information, provide your final answer
-          - If you need more data, call the next tool
+          - After `fetch_market_data` result, IMMEDIATELY check: Do I have recommendation?
+          - If recommendation exists → You're DONE with tools → Provide final answer NOW
+          - If no recommendation → Decide: call another tool OR provide analysis with available data
+          - **DO NOT call `fetch_market_data` again if you already called it - the data is cached and will return the same result**
 
           **Step 4: DECIDE** (Self-termination)
-          - STOP when you have: market data + analysis + recommendation
+          - **STOP IMMEDIATELY** when `fetch_market_data` returns data with `recommendation` field
+          - STOP when you have: market data + indicators + recommendation
           - STOP when confidence is high (>0.7) and all required data is collected
           - STOP when you've provided a comprehensive answer
-          - CONTINUE if you're missing critical data
+          - **NEVER call the same tool twice** - if you see a cached result, it means you already have that data
 
           CRITICAL RULES:
-          - For symbol analysis queries, ALWAYS start with `fetch_market_data` to get OHLC and indicators
+          - **Call `fetch_market_data` EXACTLY ONCE per symbol** - never call it again
+          - **When tool result shows `stop_calling_tools: true` or `message` says "STOP calling tools" → IMMEDIATELY provide final answer**
+          - **If you see `recommendation` in tool result → You have everything → STOP → Provide analysis**
           - Call tools ONE BY ONE - sequential execution reduces model load
           - Wait for tool results before calling the next tool
           - If a tool fails, try a different approach or explain what's needed
-          - Provide your final answer when you have sufficient information - don't over-iterate
+          - **If you call a tool and get the same result (cached), it means you already have that data - use it and provide analysis**
 
           TOOL SEQUENCE EXAMPLES:
 
           Example 1: "Analyze SENSEX for intraday trading"
+          → Step 1: Call `fetch_market_data` with symbol="SENSEX" (ONCE ONLY)
+          → Step 2: Tool returns: {symbol: "SENSEX", timeframes: {...}, recommendation: {action: "buy_pe", trend: "BEARISH", strike: 85400, premium: 170, ...}, stop_calling_tools: true}
+          → Step 3: See `recommendation` and `stop_calling_tools: true` → IMMEDIATELY provide final answer
+          → Step 4: DO NOT call any more tools - you have everything you need!
+
+          Example 2: "Analyze SENSEX" (second call in same session)
           → Step 1: Call `fetch_market_data` with symbol="SENSEX"
-          → Step 2: Analyze the returned data (timeframes, indicators, recommendation)
-          → Step 3: Provide final answer with analysis and recommendations
+          → Step 2: Get cached result (same as before) with `stop_calling_tools: true`
+          → Step 3: IMMEDIATELY provide analysis - do NOT call fetch_market_data again!
 
           Example 2: "Check if NIFTY signals are aligned"
           → Step 1: Call `fetch_market_data` with symbol="NIFTY" (to get timeframe data)

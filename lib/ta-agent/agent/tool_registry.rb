@@ -52,6 +52,7 @@ module TaAgent
         tool = @tools[name]
         return nil unless tool
         return nil unless tool[:enabled]
+
         tool
       end
 
@@ -130,9 +131,10 @@ module TaAgent
           :fetch_market_data,
           description: "Fetch comprehensive market data for a symbol including OHLC data, indicators, and timeframe analysis. Use this FIRST when you need to analyze a symbol. Returns structured data with timeframes (15m, 5m, 1m), indicators (EMA, trend, etc.), and recommendations.",
           params_schema: {
-            symbol: { type: "string", description: "Symbol to analyze (e.g., NIFTY, SENSEX, BANKNIFTY)", required: true }
+            symbol: { type: "string", description: "Symbol to analyze (e.g., NIFTY, SENSEX, BANKNIFTY)",
+                      required: true }
           },
-          handler: ->(args) {
+          handler: lambda { |args|
             symbol = args[:symbol]&.to_s&.upcase
             unless symbol
               return {
@@ -196,10 +198,11 @@ module TaAgent
           description: "Check if signals across timeframes (15m, 5m, 1m) are aligned and consistent",
           params_schema: {
             tf_15m: { type: "object", description: "15m timeframe context with bias, trend_strength", required: true },
-            tf_5m: { type: "object", description: "5m timeframe context with setup_type, momentum_alignment", required: true },
+            tf_5m: { type: "object", description: "5m timeframe context with setup_type, momentum_alignment",
+                     required: true },
             tf_1m: { type: "object", description: "1m timeframe context with entry_signal", required: true }
           },
-          handler: ->(args) {
+          handler: lambda { |args|
             tf_15m = args[:tf_15m] || {}
             tf_5m = args[:tf_5m] || {}
             tf_1m = args[:tf_1m] || {}
@@ -249,11 +252,12 @@ module TaAgent
           :check_market_conditions,
           description: "Validate market conditions (volatility, trend strength, liquidity) are suitable for options trading",
           params_schema: {
-            volatility: { type: "string", description: "Volatility state (expanding, contracting, stable)", required: true },
+            volatility: { type: "string", description: "Volatility state (expanding, contracting, stable)",
+                          required: true },
             trend_strength: { type: "string", description: "Trend strength (strong, weak, unknown)", required: true },
             liquidity_score: { type: "number", description: "Liquidity score (0-10)", required: true }
           },
-          handler: ->(args) {
+          handler: lambda { |args|
             # Validate required parameters are present
             if args[:volatility].nil? || args[:volatility].to_s.strip.empty?
               return {
@@ -284,9 +288,7 @@ module TaAgent
               warnings << "Volatility contracting - poor for options"
             end
 
-            if args[:trend_strength] == "weak"
-              warnings << "Weak trend - lower confidence"
-            end
+            warnings << "Weak trend - lower confidence" if args[:trend_strength] == "weak"
 
             if args[:liquidity_score] < 5.0
               suitable = false
@@ -311,7 +313,7 @@ module TaAgent
           params_schema: {
             signals: { type: "object", description: "All trading signals from different timeframes", required: true }
           },
-          handler: ->(args) {
+          handler: lambda { |args|
             signals = args[:signals] || {}
             contradictions = []
 
@@ -338,13 +340,13 @@ module TaAgent
           description: "Place a trade order (GATED - only in live mode with risk checks). DO NOT USE unless explicitly authorized.",
           params_schema: {
             symbol: { type: "string", required: true },
-            side: { type: "string", enum: ["buy", "sell"], required: true },
+            side: { type: "string", enum: %w[buy sell], required: true },
             qty: { type: "integer", required: true },
             price: { type: "number", required: false },
             strike: { type: "string", required: true },
-            option_type: { type: "string", enum: ["CE", "PE"], required: true }
+            option_type: { type: "string", enum: %w[CE PE], required: true }
           },
-          handler: ->(_args) {
+          handler: lambda { |_args|
             {
               success: false,
               error: "Execution tools are disabled in alert mode. This is a safety feature."
@@ -356,8 +358,9 @@ module TaAgent
 
       def tool_allowed_in_mode?(name)
         # Execution tools only allowed in live mode
-        execution_tools = [:place_order, :modify_order, :cancel_order]
+        execution_tools = %i[place_order modify_order cancel_order]
         return true unless execution_tools.include?(name)
+
         @mode == :live
       end
 
@@ -368,38 +371,36 @@ module TaAgent
           symbol_key = key.is_a?(String) ? key.to_sym : key
           # Recursively normalize nested hashes
           normalized[symbol_key] = if value.is_a?(Hash)
-                                      normalize_arguments(value)
-                                    elsif value.is_a?(Array)
-                                      value.map { |item| item.is_a?(Hash) ? normalize_arguments(item) : item }
-                                    else
-                                      value
-                                    end
+                                     normalize_arguments(value)
+                                   elsif value.is_a?(Array)
+                                     value.map { |item| item.is_a?(Hash) ? normalize_arguments(item) : item }
+                                   else
+                                     value
+                                   end
         end
       end
 
       def validate_arguments(_name, arguments, schema)
         schema.each do |param_name, param_def|
           # Arguments should already be normalized (symbol keys)
-          if param_def[:required] && !arguments.key?(param_name)
-            return "Missing required parameter: #{param_name}"
-          end
+          return "Missing required parameter: #{param_name}" if param_def[:required] && !arguments.key?(param_name)
 
-          if arguments.key?(param_name)
-            expected_type = param_def[:type]
-            actual_value = arguments[param_name]
+          next unless arguments.key?(param_name)
 
-            case expected_type
-            when "string"
-              return "Parameter #{param_name} must be a string" unless actual_value.is_a?(String)
-            when "integer"
-              return "Parameter #{param_name} must be an integer" unless actual_value.is_a?(Integer)
-            when "number"
-              return "Parameter #{param_name} must be a number" unless actual_value.is_a?(Numeric)
-            when "array"
-              return "Parameter #{param_name} must be an array" unless actual_value.is_a?(Array)
-            when "object"
-              return "Parameter #{param_name} must be an object/hash" unless actual_value.is_a?(Hash)
-            end
+          expected_type = param_def[:type]
+          actual_value = arguments[param_name]
+
+          case expected_type
+          when "string"
+            return "Parameter #{param_name} must be a string" unless actual_value.is_a?(String)
+          when "integer"
+            return "Parameter #{param_name} must be an integer" unless actual_value.is_a?(Integer)
+          when "number"
+            return "Parameter #{param_name} must be a number" unless actual_value.is_a?(Numeric)
+          when "array"
+            return "Parameter #{param_name} must be an array" unless actual_value.is_a?(Array)
+          when "object"
+            return "Parameter #{param_name} must be an object/hash" unless actual_value.is_a?(Hash)
           end
         end
 
@@ -408,5 +409,3 @@ module TaAgent
     end
   end
 end
-
-

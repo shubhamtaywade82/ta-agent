@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "date"
+require_relative "../market/session"
+
 # TaAgent::Tools::MarketDataTools
 #
 # Category 1: Market Data Tools (Raw Fetchers)
@@ -24,7 +27,10 @@ module TaAgent
       # @return [Hash] Raw OHLCV data
       def self.fetch_ohlc(client, symbol:, timeframe:, days:)
         to_date = Date.today
-        from_date = to_date - days
+        # For intraday data: from_date <= today - 1 OR last trading date, to_date == today
+        min_from_date = Market::Session.last_trading_date
+        historical_from_date = to_date - days
+        from_date = [min_from_date, historical_from_date].min
 
         ohlcv = client.fetch_ohlcv(
           symbol: symbol,

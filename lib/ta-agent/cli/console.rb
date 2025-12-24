@@ -938,7 +938,72 @@ module TaAgent
                 result_str = if result_data && result_data.is_a?(Hash)
                                # Show key result data
                                if result_data[:data]
-                                 " → #{result_data[:data].inspect[0..50]}"
+                                 data = result_data[:data]
+                                 # For fetch_market_data, show full recommendation details
+                                 if data.is_a?(Hash) && data[:recommendation]
+                                   rec = data[:recommendation]
+                                   trend = rec[:trend] || "N/A"
+                                   action = rec[:action] || "N/A"
+                                   option_type = rec[:option_type]
+                                   strike = rec[:strike]
+                                   premium = rec[:premium]
+
+                                   details = []
+                                   details << "Trend: #{trend}"
+                                   details << "Action: #{action}"
+                                   if option_type && strike
+                                     details << "#{option_type} #{strike}"
+                                     details << "Premium: #{premium.round(2)}" if premium && premium > 0
+                                   end
+                                   details << "Confidence: #{(data[:confidence] * 100).round(1)}%" if data[:confidence]
+
+                                   " → #{data[:symbol]}: #{details.join(", ")}"
+                                 elsif data.is_a?(Hash) && data[:symbol]
+                                   # Show timeframes summary with full details
+                                   tf_info = []
+                                   if data[:timeframes] && data[:timeframes].is_a?(Hash)
+                                     data[:timeframes].each do |tf_key, tf_data|
+                                       tf_name = tf_key.to_s.gsub(/^tf_/, "").upcase
+                                       status = tf_data[:status] || "unknown"
+                                       trend = tf_data[:trend] || ""
+                                       ema_9 = tf_data[:ema_9]
+                                       ema_21 = tf_data[:ema_21]
+                                       latest_close = tf_data[:latest_close]
+
+                                       tf_str = "#{tf_name}(#{status}"
+                                       tf_str += ", #{trend}" if trend && !trend.empty?
+                                       tf_str += ", EMA9: #{ema_9.round(2)}" if ema_9
+                                       tf_str += ", EMA21: #{ema_21.round(2)}" if ema_21
+                                       tf_str += ", Close: #{latest_close.round(2)}" if latest_close
+                                       tf_str += ")"
+                                       tf_info << tf_str
+                                     end
+                                   end
+
+                                   # Also show recommendation if available
+                                   rec_info = []
+                                   if data[:recommendation] && data[:recommendation].is_a?(Hash)
+                                     rec = data[:recommendation]
+                                     rec_info << "Trend: #{rec[:trend]}" if rec[:trend]
+                                     rec_info << "Action: #{rec[:action]}" if rec[:action]
+                                     rec_info << "Strike: #{rec[:strike]}" if rec[:strike]
+                                     rec_info << "Premium: #{rec[:premium]}" if rec[:premium]
+                                   end
+
+                                   result_str = "#{data[:symbol]}: #{tf_info.any? ? tf_info.join("; ") : "data fetched"}"
+                                   result_str += " | #{rec_info.join(", ")}" if rec_info.any?
+                                   " → #{result_str}"
+                                 else
+                                   # Use JSON formatting for better readability instead of inspect
+                                   require "json"
+                                   formatted = begin
+                                     JSON.pretty_generate(data)
+                                   rescue StandardError
+                                     data.inspect
+                                   end
+                                   # Don't truncate - show full data, but wrap it nicely
+                                   " → #{formatted}"
+                                 end
                                elsif result_data[:value]
                                  " → #{result_data[:value]}"
                                else
@@ -1025,13 +1090,13 @@ module TaAgent
             full_content = content_parts.join("\n")
 
             # If content is very long, use pager
-            if full_content.length > 3000
+            if full_content.length > 5000
               require "tty-pager"
               pager = TTY::Pager.new
               pager.page(full_content)
             else
-              # Increase box width for better display of long content
-              box_width = [[screen_width - 10, 100].max, 120].min
+              # Increase box width for better display of long content - use more of the screen
+              box_width = [[screen_width - 8, 120].max, 150].min
               result_box = TTY::Box.frame(
                 width: box_width,
                 title: { top_left: " #{@pastel&.bold("Agent Result") || "Agent Result"} ",

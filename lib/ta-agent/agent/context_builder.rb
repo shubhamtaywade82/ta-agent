@@ -2,6 +2,7 @@
 
 require "date"
 require_relative "../dhanhq/client"
+require_relative "../market/session"
 require_relative "../ta/timeframes/tf_15m"
 require_relative "../ta/timeframes/tf_5m"
 require_relative "../ta/timeframes/tf_1m"
@@ -55,7 +56,11 @@ module TaAgent
       # @return [Hash] 15m timeframe context
       def build_15m(symbol:)
         to_date = Date.today
-        from_date = to_date - 30
+        # For intraday data: from_date <= today - 1 OR last trading date, to_date == today
+        # For 15m, fetch at least 30 days but ensure from_date respects last trading date
+        min_from_date = last_trading_date
+        historical_from_date = to_date - 30
+        from_date = [min_from_date, historical_from_date].min
 
         ohlcv_data = @client.fetch_ohlcv(
           symbol: symbol,
@@ -78,7 +83,11 @@ module TaAgent
       # @return [Hash] 5m timeframe context
       def build_5m(symbol:)
         to_date = Date.today
-        from_date = to_date - 7
+        # For intraday data: from_date <= today - 1 OR last trading date, to_date == today
+        # For 5m, fetch at least 7 days but ensure from_date respects last trading date
+        min_from_date = last_trading_date
+        historical_from_date = to_date - 7
+        from_date = [min_from_date, historical_from_date].min
 
         ohlcv_data = @client.fetch_ohlcv(
           symbol: symbol,
@@ -101,7 +110,8 @@ module TaAgent
       # @return [Hash] 1m timeframe context
       def build_1m(symbol:)
         to_date = Date.today
-        from_date = to_date - 1
+        # For 1m intraday: from_date <= today - 1 OR last trading date, to_date == today
+        from_date = last_trading_date
 
         ohlcv_data = @client.fetch_ohlcv(
           symbol: symbol,
@@ -129,6 +139,15 @@ module TaAgent
           best_strike: nil,
           status: "pending"
         }
+      end
+
+      private
+
+      # Get last trading date for Indian markets
+      # Delegates to Market::Session.last_trading_date
+      # @return [Date] Last trading date (minimum: today - 1)
+      def last_trading_date
+        Market::Session.last_trading_date
       end
     end
   end
