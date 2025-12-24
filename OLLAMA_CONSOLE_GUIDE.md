@@ -15,11 +15,11 @@ bundle exec ruby bin/console
 ### 2. Test Ollama Connection
 
 ```ruby
-# Quick test (uses OLLAMA_HOST_URL env var or defaults to localhost:11434)
+# Quick test (uses OLLAMA_HOST_URL env var or defaults to 192.168.1.14:11434)
 test_ollama
 
 # Custom host and model
-test_ollama(host_url: "http://localhost:11434", model: "llama2")
+test_ollama(host_url: "http://192.168.1.14:11434", model: "llama2")
 ```
 
 ## Basic Ollama Usage
@@ -40,7 +40,7 @@ chat("Explain RSI indicator", model: "llama2")
 # Create client
 client = ollama_client(model: "llama3.2:3b")
 # or with custom host
-client = ollama_client(host_url: "http://localhost:11434", model: "llama3.2:3b")
+client = ollama_client(host_url: "http://192.168.1.14:11434", model: "llama3.2:3b")
 
 # Send a message
 response = client.chat(
@@ -213,7 +213,7 @@ puts "Content: #{parsed[:content]}"
 
 ```ruby
 begin
-  client = ollama_client(host_url: "http://localhost:11434")
+  client = ollama_client(host_url: "http://192.168.1.14:11434")
   response = client.chat(messages: [{ role: "user", content: "Hello" }])
   puts response[:content]
 rescue TaAgent::OllamaError => e
@@ -227,7 +227,7 @@ end
 ### Using Environment Variables
 
 ```bash
-export OLLAMA_HOST_URL=http://localhost:11434
+export OLLAMA_HOST_URL=http://192.168.1.14:11434
 ```
 
 ### Using Config File
@@ -237,7 +237,7 @@ Create `~/.ta-agent/config.yml`:
 ```yaml
 ollama:
   model: mistral
-  host_url: http://localhost:11434
+  host_url: http://192.168.1.14:11434
 ```
 
 ### Access Config in Console
@@ -245,7 +245,7 @@ ollama:
 ```ruby
 config = TaAgent::Config.instance
 puts config.ollama_enabled?  # => true/false
-puts config.ollama_host_url  # => "http://localhost:11434"
+puts config.ollama_host_url  # => "http://192.168.1.14:11434"
 puts config.ollama_model      # => "llama3.2:3b"
 ```
 
@@ -295,7 +295,7 @@ client = ollama_client(model: "llama3.2:3b")  # Use actual model name
 ```ruby
 # Create client with longer timeout
 client = TaAgent::LLM::OllamaClient.new(
-  host_url: "http://localhost:11434",
+  host_url: "http://192.168.1.14:11434",
   model: "llama3.2:3b",
   timeout: 60  # 60 seconds
 )

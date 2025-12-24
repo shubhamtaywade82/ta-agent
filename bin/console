@@ -19,7 +19,7 @@ require_relative "../lib/ta-agent/agent/tool_registry"
 module OllamaHelpers
   # Quick helper to create an Ollama client
   def ollama_client(host_url: nil, model: "llama3.2:3b")
-    host_url ||= ENV["OLLAMA_HOST_URL"] || "http://localhost:11434"
+    host_url ||= ENV["OLLAMA_HOST_URL"] || "http://192.168.1.14:11434"
     TaAgent::LLM::OllamaClient.new(host_url: host_url, model: model)
   end
 
@@ -46,10 +46,12 @@ module OllamaHelpers
   end
 
   # List available Ollama models
-  def list_models(host_url: nil)
-    host_url ||= ENV["OLLAMA_HOST_URL"] || "http://localhost:11434"
+  def list_models(host_url: nil, debug: false)
+    host_url ||= ENV["OLLAMA_HOST_URL"] || "http://192.168.1.14:11434"
     require "faraday"
     require "json"
+
+    puts "🔍 Fetching models from: #{host_url}/api/tags" if debug
 
     conn = Faraday.new(url: host_url) do |c|
       c.request :json
@@ -57,37 +59,71 @@ module OllamaHelpers
     end
 
     response = conn.get("/api/tags")
+
+    if debug
+      puts "Response status: #{response.status}"
+      puts "Response body: #{response.body.inspect}"
+    end
+
     unless response.success?
-      puts "❌ Failed to list models: #{response.status} - #{response.body}"
+      puts "❌ Failed to list models: HTTP #{response.status}"
+      puts "Response: #{response.body.inspect}" if debug
+      puts "\n💡 Make sure Ollama is running: ollama serve"
       return []
     end
 
-    models = response.body["models"] || []
+    body = response.body
+    if debug
+      puts "Body type: #{body.class}"
+      puts "Body keys: #{body.keys.inspect}" if body.is_a?(Hash)
+    end
+
+    # Handle different response formats
+    models = if body.is_a?(Hash)
+               body["models"] || body[:models] || []
+             elsif body.is_a?(Array)
+               body
+             else
+               []
+             end
+
     if models.empty?
-      puts "⚠️  No models found. Pull a model with: ollama pull <model-name>"
+      puts "⚠️  No models found on this Ollama server."
+      puts "\n💡 To install a model, run in terminal:"
+      puts "   ollama pull llama3.2:3b"
+      puts "   ollama pull mistral"
+      puts "   ollama pull llama2"
+      puts "\nOr check if models exist: ollama list"
     else
-      puts "📋 Available models:"
+      puts "📋 Available models (#{models.length}):"
       models.each do |model|
-        name = model["name"] || model[:name] || "unknown"
+        # Handle both string and symbol keys
+        name = model["name"] || model[:name] || model["model"] || model[:model] || "unknown"
         size = model["size"] || model[:size]
+
         size_str = size ? " (#{(size / 1024.0 / 1024.0 / 1024.0).round(2)} GB)" : ""
         puts "  • #{name}#{size_str}"
       end
     end
 
-    models.map { |m| m["name"] || m[:name] }.compact
+    # Return array of model names
+    models.map do |m|
+      m["name"] || m[:name] || m["model"] || m[:model]
+    end.compact
   rescue Faraday::ConnectionFailed, Faraday::TimeoutError => e
     puts "❌ Connection failed: #{e.message}"
     puts "Make sure Ollama is running at #{host_url}"
+    puts "Start it with: ollama serve"
     []
   rescue StandardError => e
     puts "❌ Error listing models: #{e.message}"
+    puts e.backtrace.first(3).join("\n") if debug
     []
   end
 
   # Quick helper to test Ollama connection
   def test_ollama(host_url: nil, model: "llama3.2:3b", auto_find_model: true)
-    host_url ||= ENV["OLLAMA_HOST_URL"] || "http://localhost:11434"
+    host_url ||= ENV["OLLAMA_HOST_URL"] || "http://192.168.1.14:11434"
     puts "Testing Ollama connection..."
     puts "Host: #{host_url}"
     puts "Model: #{model}"
@@ -115,15 +151,17 @@ module OllamaHelpers
       # Try to find an available model if auto_find_model is enabled
       if auto_find_model && error_msg.include?("not found")
         puts "\n🔍 Searching for available models..."
-        available_models = list_models(host_url: host_url)
+        available_models = list_models(host_url: host_url, debug: false)
 
         if available_models.any?
           first_model = available_models.first
           puts "\n✨ Trying with first available model: #{first_model}"
           return test_ollama(host_url: host_url, model: first_model, auto_find_model: false)
         else
-          puts "\n💡 Pull a model with: ollama pull #{model}"
-          puts "   Or try: ollama pull llama2"
+          puts "\n💡 No models found. Pull a model with:"
+          puts "   ollama pull llama3.2:3b"
+          puts "   ollama pull mistral"
+          puts "   ollama pull llama2"
         end
       end
 
@@ -149,7 +187,7 @@ module OllamaHelpers
 
   # Debug helper to see raw Ollama response
   def debug_ollama_response(message: "Hello", model: "llama3.2:3b", host_url: nil)
-    host_url ||= ENV["OLLAMA_HOST_URL"] || "http://localhost:11434"
+    host_url ||= ENV["OLLAMA_HOST_URL"] || "http://192.168.1.14:11434"
 
     # Make raw request to see actual response
     require "faraday"
@@ -224,6 +262,7 @@ puts <<~WELCOME
   ------------
   # List available models
   list_models
+  # Debug mode: list_models(debug: true)
 
   # Test Ollama connection (auto-finds model if needed)
   test_ollama

@@ -12,7 +12,7 @@
 # Required ENV:
 # - DHANHQ_CLIENT_ID
 # - DHANHQ_ACCESS_TOKEN
-# - OLLAMA_HOST_URL (optional, defaults to http://localhost:11434)
+# - OLLAMA_HOST_URL (optional, defaults to http://192.168.1.14:11434)
 #
 # Design:
 # - Class-level validation methods
@@ -21,7 +21,7 @@ module TaAgent
   class Environment
     REQUIRED_VARS = %w[DHANHQ_CLIENT_ID DHANHQ_ACCESS_TOKEN].freeze
     OPTIONAL_VARS = {
-      "OLLAMA_HOST_URL" => "http://localhost:11434"
+      "OLLAMA_HOST_URL" => "http://192.168.1.14:11434"
     }.freeze
 
     # Support both naming conventions:

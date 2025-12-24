@@ -63,12 +63,10 @@ module TaAgent
         puts "\nInterrupted."
         exit 130
       rescue StandardError => e
-        if @global_opts[:debug]
-          raise
-        else
-          puts "Error: #{e.message}"
-          exit 1
-        end
+        raise if @global_opts[:debug]
+
+        puts "Error: #{e.message}"
+        exit 1
       end
 
       private
@@ -125,7 +123,7 @@ module TaAgent
           Environment Variables:
             DHANHQ_CLIENT_ID        DhanHQ API client ID (required)
             DHANHQ_ACCESS_TOKEN    DhanHQ API access token (required)
-            OLLAMA_HOST_URL        Ollama server URL (optional, default: http://localhost:11434)
+            OLLAMA_HOST_URL        Ollama server URL (optional, default: http://192.168.1.14:11434)
 
           Config File:
             ~/.ta-agent/config.yml (optional)

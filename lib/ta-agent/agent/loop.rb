@@ -62,21 +62,17 @@ module TaAgent
 
           # 3. Check stop conditions
           stop_check = @state.should_stop?(response)
-          if stop_check[:stop?]
-            return build_final_result(stop_check[:reason])
-          end
+          return build_final_result(stop_check[:reason]) if stop_check[:stop?]
 
           # 4. Execute tool if LLM requested one
-          if response[:type] == "tool_call" && response[:tool_name]
-            tool_result = execute_tool(response[:tool_name], response[:arguments])
-            @state = @state.add_tool_result(response[:tool_name], tool_result)
+          next unless response[:type] == "tool_call" && response[:tool_name]
 
-            # Check if tool error should stop loop
-            stop_check = @state.should_stop?({})
-            if stop_check[:stop?]
-              return build_final_result(stop_check[:reason])
-            end
-          end
+          tool_result = execute_tool(response[:tool_name], response[:arguments])
+          @state = @state.add_tool_result(response[:tool_name], tool_result)
+
+          # Check if tool error should stop loop
+          stop_check = @state.should_stop?({})
+          return build_final_result(stop_check[:reason]) if stop_check[:stop?]
         end
 
         build_final_result("Loop completed")
@@ -175,6 +171,3 @@ module TaAgent
     end
   end
 end
-
-
-

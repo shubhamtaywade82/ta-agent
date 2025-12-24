@@ -36,7 +36,7 @@ gem 'ta-agent'
 ```bash
 export DHANHQ_CLIENT_ID=xxxx
 export DHANHQ_ACCESS_TOKEN=xxxx
-export OLLAMA_HOST_URL=http://localhost:11434  # Optional
+export OLLAMA_HOST_URL=http://192.168.1.14:11434  # Optional
 ```
 
 ### Optional Config File

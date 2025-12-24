@@ -89,9 +89,7 @@ module TaAgent
           when "assistant"
             formatted[:content] = msg[:content]
             # Add tool calls if present
-            if msg[:tool_calls]&.any?
-              formatted[:tool_calls] = msg[:tool_calls]
-            end
+            formatted[:tool_calls] = msg[:tool_calls] if msg[:tool_calls]&.any?
           when "tool"
             formatted[:name] = msg[:name]
             formatted[:content] = msg[:content]
