@@ -39,7 +39,8 @@ Gem::Specification.new do |spec|
   # Core dependencies - minimal, intentional
   # Note: DhanHQ git source is specified in Gemfile for development
   # Gemspecs cannot use git: option - use version requirement here
-  spec.add_dependency "faraday", ">= 0.9", "< 3.0"
+  # Pin to faraday 1.x because dhan_hq depends on faraday_middleware which requires faraday ~> 1.0
+  spec.add_dependency "faraday", ">= 1.0", "< 2.0"
   spec.add_dependency "json"
   spec.add_dependency "pastel", "~> 0.8"
   spec.add_dependency "ruby-technical-analysis"

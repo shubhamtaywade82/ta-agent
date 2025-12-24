@@ -61,11 +61,28 @@ module TaAgent
         # Trim memory if too large
         new_state.memory = new_state.memory.last(MAX_MEMORY_ITEMS)
 
+        # Store concise tool result to reduce token usage
+        tool_content = if result[:success] && result[:data]
+                         # Extract only essential data
+                         essential_data = if result[:data].is_a?(Hash)
+                                            result[:data].slice(:status, :trend, :recommendation, :confidence, :suitable, :value,
+                                                                :error).compact
+                                          else
+                                            result[:data]
+                                          end
+                         { success: true, data: essential_data }.to_json
+                       else
+                         # Keep error messages concise
+                         { success: false, error: result[:error] || "Unknown error" }.to_json
+                       end
+
         new_state.conversation_history << {
           role: "tool",
           name: tool_name.to_s,
-          content: result.to_json
+          content: tool_content
         }
+        # Keep conversation history manageable - only last 10 messages
+        new_state.conversation_history = new_state.conversation_history.last(10)
         new_state
       end
 
@@ -79,9 +96,7 @@ module TaAgent
         end
 
         # Stop condition 2: Step limit
-        if @step_count >= MAX_STEPS
-          return { stop?: true, reason: "Maximum steps (#{MAX_STEPS}) reached" }
-        end
+        return { stop?: true, reason: "Maximum steps (#{MAX_STEPS}) reached" } if @step_count >= MAX_STEPS
 
         # Stop condition 3: Confidence threshold (if in response)
         if response[:confidence] && response[:confidence] < 0.3
@@ -92,9 +107,7 @@ module TaAgent
         if @last_tool_result && !@last_tool_result[:success]
           # Allow one retry, then stop
           error_count = @memory.count { |m| m[:result] && !m[:result][:success] }
-          if error_count >= 2
-            return { stop?: true, reason: "Too many tool errors" }
-          end
+          return { stop?: true, reason: "Too many tool errors" } if error_count >= 2
         end
 
         { stop?: false, reason: nil }
@@ -121,7 +134,7 @@ module TaAgent
         if @memory.any?
           prompt_parts << "Recent Tool Results:"
           @memory.last(5).each do |item|
-            prompt_parts << "- #{item[:tool]}: #{item[:result][:success] ? 'Success' : 'Error: ' + item[:result][:error]}"
+            prompt_parts << "- #{item[:tool]}: #{item[:result][:success] ? "Success" : "Error: " + item[:result][:error]}"
           end
           prompt_parts << ""
         end
@@ -153,5 +166,3 @@ module TaAgent
     end
   end
 end
-
-

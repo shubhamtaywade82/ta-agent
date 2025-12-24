@@ -95,8 +95,11 @@ module TaAgent
           }
         end
 
+        # Normalize arguments: convert string keys to symbol keys
+        normalized_args = normalize_arguments(arguments)
+
         # Validate arguments
-        validation_error = validate_arguments(name, arguments, tool[:params_schema])
+        validation_error = validate_arguments(name, normalized_args, tool[:params_schema])
         if validation_error
           return {
             success: false,
@@ -104,9 +107,9 @@ module TaAgent
           }
         end
 
-        # Execute tool handler
+        # Execute tool handler with normalized arguments
         begin
-          result = tool[:handler].call(arguments)
+          result = tool[:handler].call(normalized_args)
           {
             success: true,
             data: result
@@ -122,6 +125,71 @@ module TaAgent
       private
 
       def register_default_tools
+        # Data fetching tool - fetches market data for analysis
+        register(
+          :fetch_market_data,
+          description: "Fetch comprehensive market data for a symbol including OHLC data, indicators, and timeframe analysis. Use this FIRST when you need to analyze a symbol. Returns structured data with timeframes (15m, 5m, 1m), indicators (EMA, trend, etc.), and recommendations.",
+          params_schema: {
+            symbol: { type: "string", description: "Symbol to analyze (e.g., NIFTY, SENSEX, BANKNIFTY)", required: true }
+          },
+          handler: ->(args) {
+            symbol = args[:symbol]&.to_s&.upcase
+            unless symbol
+              return {
+                success: false,
+                error: "Symbol is required. Provide a symbol like 'NIFTY', 'SENSEX', or 'BANKNIFTY'"
+              }
+            end
+
+            begin
+              require_relative "../dhanhq/client"
+              require_relative "runner"
+              require_relative "context_builder"
+
+              # Load config
+              config = TaAgent::Config.load
+
+              # Create DhanHQ client
+              client = TaAgent::DhanHQ::Client.new(
+                client_id: config.dhanhq_client_id,
+                access_token: config.dhanhq_access_token
+              )
+
+              # Use Runner to fetch comprehensive data
+              runner = TaAgent::Agent::Runner.new(symbol: symbol, config: config)
+              result = runner.run
+
+              {
+                success: true,
+                data: {
+                  symbol: result[:symbol],
+                  timeframes: result[:timeframes] || {},
+                  recommendation: result[:recommendation],
+                  confidence: result[:confidence] || 0.0,
+                  timestamp: result[:timestamp],
+                  errors: result[:errors] || []
+                }
+              }
+            rescue TaAgent::ConfigurationError => e
+              {
+                success: false,
+                error: "Configuration error: #{e.message}. Please check your DhanHQ credentials."
+              }
+            rescue TaAgent::DhanHQError => e
+              {
+                success: false,
+                error: "Data fetch error: #{e.message}. Check if market is open and symbol is valid."
+              }
+            rescue StandardError => e
+              {
+                success: false,
+                error: "Unexpected error fetching data: #{e.message}"
+              }
+            end
+          },
+          enabled: true
+        )
+
         # Analysis tools - always available in alert mode
         register(
           :validate_signal_alignment,
@@ -135,6 +203,14 @@ module TaAgent
             tf_15m = args[:tf_15m] || {}
             tf_5m = args[:tf_5m] || {}
             tf_1m = args[:tf_1m] || {}
+
+            # Check if required data is present
+            if tf_15m.empty? && tf_5m.empty? && tf_1m.empty?
+              return {
+                success: false,
+                error: "All timeframe objects are empty. This tool requires actual data with fields like bias, trend_strength, setup_type, momentum_alignment, entry_signal. Please provide data or use this tool only when you have timeframe analysis results."
+              }
+            end
 
             aligned = true
             contradictions = []
@@ -178,6 +254,28 @@ module TaAgent
             liquidity_score: { type: "number", description: "Liquidity score (0-10)", required: true }
           },
           handler: ->(args) {
+            # Validate required parameters are present
+            if args[:volatility].nil? || args[:volatility].to_s.strip.empty?
+              return {
+                success: false,
+                error: "Missing required parameter: volatility. This tool requires volatility state (expanding, contracting, stable). Please provide actual market data or use this tool only when you have volatility information."
+              }
+            end
+
+            if args[:trend_strength].nil? || args[:trend_strength].to_s.strip.empty?
+              return {
+                success: false,
+                error: "Missing required parameter: trend_strength. This tool requires trend strength (strong, weak, unknown). Please provide actual market data or use this tool only when you have trend information."
+              }
+            end
+
+            if args[:liquidity_score].nil?
+              return {
+                success: false,
+                error: "Missing required parameter: liquidity_score. This tool requires a liquidity score (0-10). Please provide actual market data or use this tool only when you have liquidity information."
+              }
+            end
+
             suitable = true
             warnings = []
 
@@ -246,7 +344,7 @@ module TaAgent
             strike: { type: "string", required: true },
             option_type: { type: "string", enum: ["CE", "PE"], required: true }
           },
-          handler: ->(args) {
+          handler: ->(_args) {
             {
               success: false,
               error: "Execution tools are disabled in alert mode. This is a safety feature."
@@ -263,8 +361,25 @@ module TaAgent
         @mode == :live
       end
 
-      def validate_arguments(name, arguments, schema)
+      def normalize_arguments(arguments)
+        return {} unless arguments.is_a?(Hash)
+
+        arguments.each_with_object({}) do |(key, value), normalized|
+          symbol_key = key.is_a?(String) ? key.to_sym : key
+          # Recursively normalize nested hashes
+          normalized[symbol_key] = if value.is_a?(Hash)
+                                      normalize_arguments(value)
+                                    elsif value.is_a?(Array)
+                                      value.map { |item| item.is_a?(Hash) ? normalize_arguments(item) : item }
+                                    else
+                                      value
+                                    end
+        end
+      end
+
+      def validate_arguments(_name, arguments, schema)
         schema.each do |param_name, param_def|
+          # Arguments should already be normalized (symbol keys)
           if param_def[:required] && !arguments.key?(param_name)
             return "Missing required parameter: #{param_name}"
           end

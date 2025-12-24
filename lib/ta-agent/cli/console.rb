@@ -60,29 +60,32 @@ module TaAgent
         @pastel = Pastel.new
         @cursor = TTY::Cursor
 
-        # Clear screen and show banner
-        print @cursor.clear_screen
-        print @cursor.move_to(0, 0)
+        # Clear screen and show banner (only if not already shown)
+        unless @banner_shown
+          print @cursor.clear_screen
+          print @cursor.move_to(0, 0)
 
-        # Get terminal width for responsive design
-        screen_width = TTY::Screen.width
-        box_width = [screen_width - 4, 60].min
+          # Get terminal width for responsive design
+          screen_width = TTY::Screen.width
+          box_width = [screen_width - 4, 60].min
 
-        # Use TTY::Box for beautiful banner with styled title
-        # Note: TTY::Box doesn't support colored borders directly, so we use default borders
-        # and style the content instead
-        banner = TTY::Box.frame(
-          width: box_width,
-          align: :center,
-          title: { top_left: " #{@pastel.bold.cyan("Interactive Console")} ",
-                   bottom_right: " #{@pastel.dim("v#{TaAgent::VERSION}")} " },
-          border: :thick,
-          padding: [1, 2]
-        ) do
-          "#{@pastel.bold("Technical Analysis Agent")}\n#{@pastel.dim("for Indian Markets")}"
+          # Use TTY::Box for beautiful banner with styled title
+          # Note: TTY::Box doesn't support colored borders directly, so we use default borders
+          # and style the content instead
+          banner = TTY::Box.frame(
+            width: box_width,
+            align: :center,
+            title: { top_left: " #{@pastel.bold.cyan("Interactive Console")} ",
+                     bottom_right: " #{@pastel.dim("v#{TaAgent::VERSION}")} " },
+            border: :thick,
+            padding: [1, 2]
+          ) do
+            "#{@pastel.bold("Technical Analysis Agent")}\n#{@pastel.dim("for Indian Markets")}"
+          end
+
+          puts banner
+          @banner_shown = true
         end
-
-        puts banner
         puts "\n#{@pastel.dim("Type")} #{@pastel.bold("help")} #{@pastel.dim("for available commands,")} #{@pastel.bold("exit")} #{@pastel.dim("to quit.")}"
         puts "#{@pastel.dim("Use")} #{@pastel.bold("mode <name>")} #{@pastel.dim("to switch modes (chat, agent, planning, deep_research).")}"
         puts "#{@pastel.dim("Use ↑↓ arrow keys for command history, Tab for completion.")}\n"
@@ -131,14 +134,51 @@ module TaAgent
         return unless File.exist?(@history_file)
         return unless @readline_module.const_defined?(:HISTORY)
 
+        history = @readline_module::HISTORY
         File.readlines(@history_file, chomp: true).each do |line|
           next if line.strip.empty?
 
-          history = @readline_module::HISTORY
+          # Add to history only if not already present (deduplication on load)
           history.push(line) unless history.include?(line)
         end
       rescue StandardError => e
         warn "Warning: Could not load history: #{e.message}" if @global_opts[:debug]
+      end
+
+      def add_to_history(command)
+        return unless @readline_module.const_defined?(:HISTORY)
+
+        history = @readline_module::HISTORY
+
+        # Get current history as array
+        history_array = history.to_a
+
+        # Remove any existing instance of this command (deduplication)
+        history_array.delete(command)
+
+        # Add the command at the end (most recent)
+        history_array.push(command)
+
+        # Rebuild history: clear and repopulate
+        begin
+          # Clear existing history
+          if history.respond_to?(:clear)
+            history.clear
+          else
+            # Fallback: remove items one by one
+            history.shift while history.length > 0
+          end
+
+          # Repopulate with deduplicated history
+          history_array.each do |item|
+            history.push(item)
+          end
+        rescue StandardError => e
+          # If manipulation fails, just add the command (fallback)
+          # This ensures history still works even if deduplication fails
+          history.push(command) unless history.to_a.include?(command)
+          warn "Warning: Could not deduplicate history: #{e.message}" if @global_opts[:debug]
+        end
       end
 
       def save_history
@@ -148,10 +188,20 @@ module TaAgent
         # Ensure directory exists
         FileUtils.mkdir_p(File.dirname(@history_file))
 
-        # Save last 1000 lines of history
+        # Save last 1000 lines of history (already deduplicated by add_to_history)
         history = @readline_module::HISTORY
         history_lines = history.to_a.last(1000)
-        File.write(@history_file, history_lines.join("\n") + "\n")
+        # Remove any duplicates that might have been added by Readline itself
+        # Keep only the last occurrence of each command
+        deduplicated = []
+        seen = {}
+        history_lines.reverse_each do |line|
+          unless seen[line]
+            deduplicated.unshift(line)
+            seen[line] = true
+          end
+        end
+        File.write(@history_file, deduplicated.join("\n") + "\n")
       rescue StandardError => e
         warn "Warning: Could not save history: #{e.message}" if @global_opts[:debug]
       end
@@ -160,7 +210,8 @@ module TaAgent
         while @running
           begin
             prompt_text = build_prompt
-            command = @readline_module.public_send(@readline_method, prompt_text, true)
+            # Use false to prevent automatic history addition - we'll manage it manually
+            command = @readline_module.public_send(@readline_method, prompt_text, false)
 
             # Handle EOF (Ctrl+D)
             break if command.nil?
@@ -168,7 +219,10 @@ module TaAgent
             command = command.strip
             next if command.empty?
 
-            # Add to history (Readline does this automatically, but ensure it's saved)
+            # Manually add to history with deduplication
+            add_to_history(command)
+
+            # Process the command
             handle_command(command)
           rescue Interrupt
             puts "\nUse 'exit' to quit or Ctrl+D"
@@ -457,8 +511,23 @@ module TaAgent
             end
           end
 
+          # Calculate screen width once for consistency
+          screen_width = begin
+            TTY::Screen.width
+          rescue StandardError
+            80
+          end
+
+          # Use most of the screen width, but leave some margin for terminal edges
+          # Ensure minimum width for readability (at least 70), but allow wider displays (up to 120)
+          box_width = [[screen_width - 8, 70].max, 120].min
+
+          # Calculate table width to fit within box: box_width - padding (2*2) - borders (2) - some margin
+          # Table should be narrower than box content area
+          table_width = [[box_width - 12, 60].max, 110].min
+
           timeframe_table = TTY::Table.new(%w[Timeframe Indicators], timeframe_rows)
-          timeframe_display = timeframe_table.render(:unicode, resize: true)
+          timeframe_display = timeframe_table.render(:unicode, resize: true, width: table_width, multiline: true)
 
           # Build recommendation section with confidence pie chart
           recommendation_text = if result[:recommendation]
@@ -475,15 +544,121 @@ module TaAgent
                                     radius: 3
                                   )
 
-                                  action_color = case rec[:action].downcase
-                                                 when "buy" then @pastel&.green || ""
-                                                 when "sell" then @pastel&.red || ""
-                                                 else @pastel&.yellow || ""
-                                                 end
+                                  # Format recommendation based on type
+                                  trend_text = rec[:trend] || (if %w[buy buy_ce].include?(rec[:action])
+                                                                 "BULLISH"
+                                                               elsif %w[sell
+                                                                        buy_pe].include?(rec[:action])
+                                                                 "BEARISH"
+                                                               else
+                                                                 "NEUTRAL"
+                                                               end)
 
-                                  "#{action_color}#{rec[:action].upcase}#{@pastel&.reset || ""}\n" \
-                                  "Reason: #{rec[:reason]}\n" \
-                                  "Confidence: #{pie.render}"
+                                  if %w[buy_ce buy_pe].include?(rec[:action])
+                                    # Options buying format
+                                    option_type = rec[:option_type] || (rec[:action] == "buy_ce" ? "CE" : "PE")
+                                    strike = rec[:strike]
+                                    premium = rec[:premium]
+                                    target_1 = rec[:target_1]
+                                    target_2 = rec[:target_2]
+                                    stop_loss = rec[:stop_loss]
+                                    theta = rec[:theta]
+                                    days_to_expiry = rec[:days_to_expiry]
+
+                                    action_parts = []
+                                    action_parts << "Buy #{option_type}"
+                                    action_parts << "#{strike}" if strike && strike > 0
+                                    premium_display = if premium && premium > 0
+                                                        premium_str = premium.round(2).to_s
+                                                        # Mark estimated premiums
+                                                        if rec[:premium_is_estimated]
+                                                          "#{premium_str} (estimated)"
+                                                        else
+                                                          premium_str
+                                                        end
+                                                      else
+                                                        nil
+                                                      end
+                                    action_parts << "at #{premium_display}" if premium_display
+
+                                    action_str = action_parts.join(" ")
+
+                                    details = []
+                                    details << "tp at #{target_1.round(2)}" if target_1 && target_1 > 0
+                                    details << "sl #{stop_loss.round(2)}" if stop_loss && stop_loss > 0
+                                    if target_2 && target_2 > 0
+                                      details << "target 2: #{target_2.round(2)} (if momentum is good)"
+                                    end
+
+                                    expiry_note = []
+                                    # Show expiry date if available
+                                    if rec[:expiry_date]
+                                      expiry_date = rec[:expiry_date]
+                                      expiry_date_str = if expiry_date.is_a?(Date)
+                                                          expiry_date.strftime("%d-%b-%Y")
+                                                        elsif expiry_date.is_a?(String)
+                                                          expiry_date
+                                                        else
+                                                          expiry_date.to_s
+                                                        end
+                                      expiry_note << "expiry: #{expiry_date_str}"
+                                    elsif days_to_expiry && days_to_expiry > 0
+                                      expiry_note << "expiry: #{days_to_expiry} days"
+                                    end
+                                    expiry_note << "theta: #{theta.round(2)}" if theta && !theta.nan? && theta != 0
+
+                                    action_display = if @pastel
+                                                       @pastel.green(action_str)
+                                                     else
+                                                       action_str
+                                                     end
+
+                                    trend_display = if @pastel
+                                                      case trend_text
+                                                      when "BULLISH" then @pastel.green("BULLISH")
+                                                      when "BEARISH" then @pastel.red("BEARISH")
+                                                      else @pastel.yellow(trend_text)
+                                                      end
+                                                    else
+                                                      trend_text
+                                                    end
+
+                                    recommendation_lines = []
+                                    recommendation_lines << "Trend: #{trend_display}"
+                                    recommendation_lines << "Action: #{action_display}"
+                                    recommendation_lines << "  #{details.join(", ")}" if details.any?
+                                    recommendation_lines << "  Note: #{expiry_note.join(", ")}" if expiry_note.any?
+                                    recommendation_lines << "Reason: #{rec[:reason]}"
+                                    recommendation_lines << "Confidence: #{pie.render}"
+
+                                    recommendation_lines.join("\n")
+                                  else
+                                    # Standard format
+                                    action_text = if @pastel
+                                                    case rec[:action].downcase
+                                                    when "buy" then @pastel.green(rec[:action].upcase)
+                                                    when "sell" then @pastel.red(rec[:action].upcase)
+                                                    else @pastel.yellow(rec[:action].upcase)
+                                                    end
+                                                  else
+                                                    rec[:action].upcase
+                                                  end
+
+                                    trend_display = if @pastel
+                                                      case trend_text
+                                                      when "BULLISH" then @pastel.green("BULLISH")
+                                                      when "BEARISH" then @pastel.red("BEARISH")
+                                                      else @pastel.yellow(trend_text)
+                                                      end
+                                                    else
+                                                      trend_text
+                                                    end
+
+                                    "Trend: #{trend_display}\n" \
+                                    "Action: #{action_text}\n" \
+                                    "Reason: #{rec[:reason]}\n" \
+                                    "Confidence: #{pie.render}"
+                                  end
                                 else
                                   "No recommendation available"
                                 end
@@ -495,14 +670,6 @@ module TaAgent
           if result[:errors].any?
             content_parts << "\n#{@pastel&.red("⚠ Errors:") || "⚠ Errors:"}\n#{result[:errors].join("\n")}"
           end
-
-          # Use TTY::Screen for responsive width
-          screen_width = begin
-            TTY::Screen.width
-          rescue StandardError
-            80
-          end
-          box_width = [screen_width - 10, 70].min
 
           result_box = TTY::Box.frame(
             width: box_width,
@@ -744,21 +911,138 @@ module TaAgent
             answer = result[:answer] || "Task completed"
             parsed_answer = parse_answer_if_json(answer)
 
-            # Use TTY::Box for beautiful result display
-            result_box = TTY::Box.frame(
-              width: 70,
-              title: { top_left: " Agent Result ", bottom_right: " Step #{result[:steps] || 0} " },
-              border: :thick,
-              padding: [1, 2]
-            ) do
-              content = parsed_answer
-              content += "\n\n" + "─" * 66 + "\n"
-              content += "Steps: #{result[:steps]}" if result[:steps]
-              content += " | Stop: #{result[:stop_reason]}" if result[:stop_reason]
-              content
+            # Build detailed agent result with tool calls and memory
+            content_parts = []
+
+            # Check if answer is actually a tool call JSON (not just text mentioning tools)
+            is_tool_call = answer.is_a?(String) && (
+              answer.match?(/^\s*\{.*"name"\s*:/) ||
+              answer.match?(/^\s*\{.*"tool_name"\s*:/) ||
+              (answer.match?(/^\s*\{/) && answer.match?(/"function"\s*:/))
+            )
+
+            # Main answer (only if it's not a tool call)
+            if !is_tool_call && parsed_answer && !parsed_answer.strip.empty? && parsed_answer != "No final answer provided"
+              content_parts << (@pastel&.bold("Answer:") || "Answer:")
+              content_parts << parsed_answer
             end
 
-            puts "\n#{result_box}\n"
+            # Show tool execution summary if available
+            if result[:memory] && result[:memory].any?
+              content_parts << "\n" + (@pastel&.bold("Tools Used:") || "Tools Used:")
+              tool_summary = result[:memory].map do |item|
+                tool_name = item[:tool] || "unknown"
+                success = item.dig(:result, :success)
+                status_icon = success ? "✅" : "❌"
+                result_data = item.dig(:result)
+                result_str = if result_data && result_data.is_a?(Hash)
+                               # Show key result data
+                               if result_data[:data]
+                                 " → #{result_data[:data].inspect[0..50]}"
+                               elsif result_data[:value]
+                                 " → #{result_data[:value]}"
+                               else
+                                 ""
+                               end
+                             else
+                               ""
+                             end
+                "#{status_icon} #{tool_name}#{result_str}"
+              end.join("\n")
+              content_parts << tool_summary
+            end
+
+            # Show conversation summary if it's just tool calls or if answer is a tool call
+            if is_tool_call || (result[:conversation] && result[:conversation].any?)
+              # Try to parse the tool call from answer
+              if is_tool_call
+                begin
+                  tool_json = JSON.parse(answer)
+                  tool_name = tool_json["name"] || tool_json["tool_name"] || "unknown"
+                  args = tool_json["arguments"] || {}
+                  content_parts << (@pastel&.bold("Agent Action:") || "Agent Action:")
+                  content_parts << "🔧 Called: #{tool_name}"
+                  if args.any?
+                    args_str = args.map { |k, v| "#{k}: #{v}" }.join(", ")
+                    content_parts << "   Arguments: #{args_str}"
+                  end
+                rescue JSON::ParserError
+                  content_parts << (@pastel&.bold("Agent Action:") || "Agent Action:")
+                  # Show full answer, not truncated
+                  content_parts << "🔧 #{answer}"
+                end
+              elsif !parsed_answer || parsed_answer.strip.empty? || parsed_answer == "No final answer provided"
+                # Show the text response if it's not a tool call and not a final answer
+                content_parts << (@pastel&.bold("Agent Response:") || "Agent Response:")
+                # Show full answer, wrap if needed
+                content_parts << answer
+              end
+
+              # Show tool calls from conversation
+              if result[:conversation] && result[:conversation].any?
+                tool_calls = result[:conversation].select { |msg| msg[:tool_calls]&.any? }
+                if tool_calls.any?
+                  content_parts << "\n" + (@pastel&.bold("All Tool Calls:") || "All Tool Calls:")
+                  tool_calls.each do |msg|
+                    msg[:tool_calls].each do |tool_call|
+                      tool_name = tool_call.dig("function", "name") || tool_call[:name] || "unknown"
+                      args = tool_call.dig("function", "arguments") || tool_call[:arguments] || {}
+                      content_parts << "🔧 #{tool_name}"
+                      if args.any? && args.is_a?(Hash)
+                        args_str = args.map { |k, v| "#{k}: #{v}" }.join(", ")
+                        content_parts << "   Args: #{args_str}"
+                      end
+                    end
+                  end
+                end
+              end
+
+              if is_tool_call || (parsed_answer.nil? || parsed_answer.strip.empty? || parsed_answer == "No final answer provided")
+                content_parts << "\n💡 " + (@pastel&.yellow("Agent made tool calls but didn't provide a final answer yet.") || "Agent made tool calls but didn't provide a final answer yet.")
+                content_parts << "   The agent may need more steps to complete the analysis."
+                content_parts << "   Try asking again or check if the tool execution completed successfully."
+              end
+            end
+
+            # Metadata
+            metadata = []
+            metadata << "Steps: #{result[:steps]}" if result[:steps]
+            metadata << "Stop: #{result[:stop_reason]}" if result[:stop_reason]
+
+            if metadata.any?
+              content_parts << "\n" + "─" * 66
+              content_parts << metadata.join(" | ")
+            end
+
+            # Use TTY::Box for beautiful result display
+            screen_width = begin
+              TTY::Screen.width
+            rescue StandardError
+              80
+            end
+
+            # Use TTY::Pager for very long responses, or TTY::Box for shorter ones
+            full_content = content_parts.join("\n")
+
+            # If content is very long, use pager
+            if full_content.length > 3000
+              require "tty-pager"
+              pager = TTY::Pager.new
+              pager.page(full_content)
+            else
+              # Increase box width for better display of long content
+              box_width = [[screen_width - 10, 100].max, 120].min
+              result_box = TTY::Box.frame(
+                width: box_width,
+                title: { top_left: " #{@pastel&.bold("Agent Result") || "Agent Result"} ",
+                         bottom_right: " #{@pastel&.dim("Step #{result[:steps] || 0}") || "Step #{result[:steps] || 0}"} " },
+                border: :thick,
+                padding: [1, 2]
+              ) do
+                full_content
+              end
+              puts "\n#{result_box}\n"
+            end
           else
             puts "\n❌ Agent error: #{result[:error]}\n"
           end

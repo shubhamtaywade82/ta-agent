@@ -1,6 +1,13 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+# Use bundler to ensure correct gem versions
+begin
+  require "bundler/setup"
+rescue LoadError
+  # Bundler not available, continue without it
+end
+
 # Add lib to load path for development mode
 lib_path = File.expand_path("../lib", __dir__)
 $LOAD_PATH.unshift(lib_path) unless $LOAD_PATH.include?(lib_path)

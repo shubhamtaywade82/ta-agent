@@ -19,7 +19,7 @@ PATH
   remote: .
   specs:
     ta-agent (0.1.0)
-      faraday (>= 0.9, < 3.0)
+      faraday (>= 1.0, < 2.0)
       json
       pastel (~> 0.8)
       ruby-technical-analysis

@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+
 # Load .env file if it exists (before loading other modules)
 begin
   require "dotenv"
