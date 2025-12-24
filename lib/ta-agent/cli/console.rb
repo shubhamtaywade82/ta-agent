@@ -37,6 +37,8 @@ module TaAgent
         @current_mode = nil # nil = command mode, :chat, :agent, :planning, :deep_research
         @mode_history = {} # Store conversation history per mode
         @config = nil # Will be loaded when needed
+        @pastel = nil # Will be initialized in call
+        @cursor = nil # Will be initialized in call
       end
 
       def call
@@ -47,25 +49,43 @@ module TaAgent
         require "tty-progressbar"
         require "tty-pager"
         require "tty-tree"
+        require "pastel"
+        require "tty-font"
+        require "tty-screen"
+        require "tty-cursor"
         require "fileutils"
         setup_readline
 
         @prompt = TTY::Prompt.new
+        @pastel = Pastel.new
+        @cursor = TTY::Cursor
 
-        # Use TTY::Box for beautiful banner
+        # Clear screen and show banner
+        print @cursor.clear_screen
+        print @cursor.move_to(0, 0)
+
+        # Get terminal width for responsive design
+        screen_width = TTY::Screen.width
+        box_width = [screen_width - 4, 60].min
+
+        # Use TTY::Box for beautiful banner with styled title
+        # Note: TTY::Box doesn't support colored borders directly, so we use default borders
+        # and style the content instead
         banner = TTY::Box.frame(
-          width: 60,
+          width: box_width,
           align: :center,
-          title: { top_left: " ta-agent ", bottom_right: " v#{TaAgent::VERSION} " },
-          border: :thick
+          title: { top_left: " #{@pastel.bold.cyan("Interactive Console")} ",
+                   bottom_right: " #{@pastel.dim("v#{TaAgent::VERSION}")} " },
+          border: :thick,
+          padding: [1, 2]
         ) do
-          "Interactive Console\nTechnical Analysis Agent\nfor Indian Markets"
+          "#{@pastel.bold("Technical Analysis Agent")}\n#{@pastel.dim("for Indian Markets")}"
         end
 
         puts banner
-        puts "\nType 'help' for available commands, 'exit' to quit."
-        puts "Use 'mode <name>' to switch modes (chat, agent, planning, deep_research)."
-        puts "Use ↑↓ arrow keys for command history, Tab for completion.\n"
+        puts "\n#{@pastel.dim("Type")} #{@pastel.bold("help")} #{@pastel.dim("for available commands,")} #{@pastel.bold("exit")} #{@pastel.dim("to quit.")}"
+        puts "#{@pastel.dim("Use")} #{@pastel.bold("mode <name>")} #{@pastel.dim("to switch modes (chat, agent, planning, deep_research).")}"
+        puts "#{@pastel.dim("Use ↑↓ arrow keys for command history, Tab for completion.")}\n"
 
         main_loop
       ensure
@@ -217,7 +237,12 @@ module TaAgent
         when "version", "v"
           puts "ta-agent #{TaAgent::VERSION}"
         when "clear"
-          system("clear") || system("cls")
+          if @cursor
+            print @cursor.clear_screen
+            print @cursor.move_to(0, 0)
+          else
+            system("clear") || system("cls")
+          end
         when /^analyse\s+([A-Z0-9]+)(?:\s|$)/i, /^analyze\s+([A-Z0-9]+)(?:\s|$)/i
           # Only match if it's a simple symbol (uppercase letters/numbers), not a full sentence
           symbol = Regexp.last_match(1).strip
@@ -265,37 +290,78 @@ module TaAgent
       end
 
       def show_help
-        puts <<~HELP
-          Available Commands:
-            mode <name>      - Switch to a mode (chat, agent, planning, deep_research)
-            analyse SYMBOL    - Run one-time analysis for SYMBOL (e.g., NIFTY)
-            watch SYMBOL      - Start interactive monitoring for SYMBOL
-            models            - List available Ollama models
-            set_model [NAME]  - Set/change the Ollama model (interactive if no name provided)
-            menu              - Show interactive menu
-            version           - Show version (or 'v')
-            clear             - Clear screen (or 'c')
-            help              - Show this help (or 'h')
-            exit              - Exit console (or 'q')
+        require "tty-markdown"
 
-          Modes:
-            mode chat         - Enter chat mode (direct prompts to LLM)
-            mode agent        - Enter agent mode (tool-assisted reasoning)
-            mode planning     - Enter planning mode (strategic analysis)
-            mode deep_research - Enter deep research mode (comprehensive analysis)
-            mode off          - Exit current mode and return to command mode
+        help_md = <<~HELP
+          # ta-agent Console Help
 
-          Examples:
-            ta-agent> mode chat
-            ta-agent[chat]> What is RSI?
-            ta-agent[chat]> mode off
+          ## Available Commands
 
-            ta-agent> mode agent
-            ta-agent[agent]> Analyze NIFTY and explain the trend
+          ### Mode Commands
+          - `mode <name>` - Switch to a mode (chat, agent, planning, deep_research)
+          - `mode off` - Exit current mode and return to command mode
 
-            ta-agent> analyse NIFTY
-            ta-agent> watch NIFTY
+          ### Analysis Commands
+          - `analyse SYMBOL` - Run one-time analysis for SYMBOL (e.g., NIFTY)
+          - `watch SYMBOL` - Start interactive monitoring for SYMBOL
+
+          ### Configuration Commands
+          - `models` - List available Ollama models
+          - `set_model [NAME]` - Set/change the Ollama model (interactive if no name provided)
+
+          ### Utility Commands
+          - `menu` - Show interactive menu
+          - `version` or `v` - Show version
+          - `clear` or `c` - Clear screen
+          - `help` or `h` - Show this help
+          - `exit` or `q` - Exit console
+
+          ## Modes
+
+          ### Chat Mode
+          Direct conversational interaction with the LLM.
+          ```
+          ta-agent> mode chat
+          ta-agent[chat]> What is RSI?
+          ```
+
+          ### Agent Mode
+          Tool-assisted reasoning with ReAct pattern.
+          ```
+          ta-agent> mode agent
+          ta-agent[agent]> Analyze NIFTY and explain the trend
+          ```
+
+          ### Planning Mode
+          Strategic analysis and risk assessment.
+          ```
+          ta-agent> mode planning
+          ta-agent[planning]> What's the best strategy for trading NIFTY options today?
+          ```
+
+          ### Deep Research Mode
+          Comprehensive research with detailed analysis.
+          ```
+          ta-agent> mode deep_research
+          ta-agent[deep_research]> Research the correlation between NIFTY and VIX
+          ```
+
+          ## Examples
+
+          ```bash
+          # Simple analysis
+          ta-agent> analyse NIFTY
+
+          # Continuous monitoring
+          ta-agent> watch NIFTY
+
+          # Natural language query (suggests agent mode)
+          ta-agent> Analyze NIFTY and explain the current trend
+          ```
         HELP
+
+        # Use TTY::Markdown for beautiful help rendering
+        puts TTY::Markdown.parse(help_md)
       end
 
       def show_menu
@@ -351,26 +417,73 @@ module TaAgent
           # Format results with TTY::Table and TTY::Box
           require "tty-table"
 
-          # Build timeframe table
-          timeframe_rows = result[:timeframes].map do |tf, data|
+          # Build detailed timeframe table with indicators
+          timeframe_rows = result[:timeframes].map do |tf_key, data|
+            tf_name = tf_key.to_s.gsub(/^tf_/, "").upcase
             status = data[:status] || "pending"
-            status_icon = case status
-                          when "complete" then "✅"
-                          when "error" then "❌"
-                          else "⏳"
-                          end
-            [tf.to_s.gsub(/^tf_/, "").upcase, "#{status_icon} #{status}"]
+
+            if status == "complete"
+              # Build indicator details
+              indicators = []
+
+              # EMA indicators
+              indicators << "EMA 9: #{data[:ema_9].round(2)}" if data[:ema_9]
+              indicators << "EMA 21: #{data[:ema_21].round(2)}" if data[:ema_21]
+
+              # Trend
+              trend_icon = case data[:trend]
+                           when "bullish" then "📈"
+                           when "bearish" then "📉"
+                           else "➡️"
+                           end
+              trend_text = data[:trend] ? "#{trend_icon} #{data[:trend].capitalize}" : ""
+
+              # Latest close
+              close_text = data[:latest_close] ? "Close: #{data[:latest_close].round(2)}" : ""
+
+              # Setup (for 5m)
+              setup_text = data[:setup] ? "Setup: #{data[:setup]}" : ""
+
+              # Combine indicator info
+              indicator_info = [trend_text, close_text, setup_text, *indicators].compact.join(" | ")
+              indicator_info = indicator_info.empty? ? "✅ Complete" : "✅ #{indicator_info}"
+
+              [tf_name, indicator_info]
+            elsif status == "error"
+              error_msg = data[:error] || "Error"
+              [tf_name, "❌ #{error_msg}"]
+            else
+              [tf_name, "⏳ #{status}"]
+            end
           end
 
-          timeframe_table = TTY::Table.new(%w[Timeframe Status], timeframe_rows)
-          timeframe_display = timeframe_table.render(:unicode)
+          timeframe_table = TTY::Table.new(%w[Timeframe Indicators], timeframe_rows)
+          timeframe_display = timeframe_table.render(:unicode, resize: true)
 
-          # Build recommendation section
+          # Build recommendation section with confidence pie chart
           recommendation_text = if result[:recommendation]
                                   rec = result[:recommendation]
-                                  "Action: #{rec[:action].upcase}\n" \
+                                  confidence = result[:confidence] || 0.0
+
+                                  # Use TTY::Pie for confidence visualization
+                                  require "tty-pie"
+                                  pie = TTY::Pie.new(
+                                    data: [
+                                      { name: "Confidence", value: (confidence * 100).round(1), color: :green },
+                                      { name: "Uncertainty", value: ((1 - confidence) * 100).round(1), color: :red }
+                                    ],
+                                    radius: 3
+                                  )
+
+                                  action_color = case rec[:action].downcase
+                                                 when "buy" then @pastel&.green || ""
+                                                 when "sell" then @pastel&.red || ""
+                                                 else @pastel&.yellow || ""
+                                                 end
+
+                                  "#{action_color}#{rec[:action].upcase}#{@pastel&.reset || ""}\n" \
                                   "Reason: #{rec[:reason]}\n" \
-                                  "Confidence: #{(result[:confidence] * 100).round(1)}%"
+                                  "Confidence: #{pie.render}"
                                 else
                                   "No recommendation available"
                                 end
@@ -379,11 +492,22 @@ module TaAgent
           content_parts = []
           content_parts << "Timeframes:\n#{timeframe_display}" if timeframe_rows.any?
           content_parts << "\nRecommendation:\n#{recommendation_text}" if result[:recommendation]
-          content_parts << "\n⚠ Errors:\n#{result[:errors].join("\n")}" if result[:errors].any?
+          if result[:errors].any?
+            content_parts << "\n#{@pastel&.red("⚠ Errors:") || "⚠ Errors:"}\n#{result[:errors].join("\n")}"
+          end
+
+          # Use TTY::Screen for responsive width
+          screen_width = begin
+            TTY::Screen.width
+          rescue StandardError
+            80
+          end
+          box_width = [screen_width - 10, 70].min
 
           result_box = TTY::Box.frame(
-            width: 70,
-            title: { top_left: " Analysis: #{result[:symbol]} ", bottom_right: " #{Time.now.strftime("%H:%M:%S")} " },
+            width: box_width,
+            title: { top_left: " #{@pastel&.bold("Analysis: #{result[:symbol]}") || "Analysis: #{result[:symbol]}"} ",
+                     bottom_right: " #{@pastel&.dim(Time.now.strftime("%H:%M:%S")) || Time.now.strftime("%H:%M:%S")} " },
             border: :thick,
             padding: [1, 2]
           ) do
