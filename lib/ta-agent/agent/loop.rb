@@ -498,68 +498,53 @@ module TaAgent
                   # Show key data including timeframes for market data
                   summary = if tool_result["data"] || tool_result[:data]
                               data = tool_result["data"] || tool_result[:data]
-                              # Extract key fields including timeframes
-                              data_summary = if data.is_a?(Hash)
-                                               # For fetch_market_data, include timeframes and recommendation
-                                               if data[:timeframes] || data["timeframes"]
-                                                 # Summarize timeframes but keep essential info
-                                                 tf_summary = {}
-                                                 timeframes = data[:timeframes] || data["timeframes"] || {}
-                                                 timeframes.each do |tf_key, tf_data|
-                                                   tf_data_hash = tf_data.is_a?(Hash) ? tf_data : {}
-                                                   tf_summary[tf_key] = {
-                                                     status: tf_data_hash[:status] || tf_data_hash["status"],
-                                                     trend: tf_data_hash[:trend] || tf_data_hash["trend"],
-                                                     ema_9: tf_data_hash[:ema_9] || tf_data_hash["ema_9"],
-                                                     ema_21: tf_data_hash[:ema_21] || tf_data_hash["ema_21"],
-                                                     latest_close: tf_data_hash[:latest_close] || tf_data_hash["latest_close"]
-                                                   }.compact
-                                                 end
-                                                 # Include full recommendation details so LLM can see it
-                                                 rec = data[:recommendation] || data["recommendation"]
-                                                 rec_summary = if rec.is_a?(Hash)
-                                                                 rec_hash = rec
-                                                                 {
-                                                                   action: rec_hash[:action] || rec_hash["action"],
-                                                                   trend: rec_hash[:trend] || rec_hash["trend"],
-                                                                   option_type: rec_hash[:option_type] || rec_hash["option_type"],
-                                                                   strike: rec_hash[:strike] || rec_hash["strike"],
-                                                                   premium: rec_hash[:premium] || rec_hash["premium"],
-                                                                   target_1: rec_hash[:target_1] || rec_hash["target_1"],
-                                                                   target_2: rec_hash[:target_2] || rec_hash["target_2"],
-                                                                   stop_loss: rec_hash[:stop_loss] || rec_hash["stop_loss"],
-                                                                   reason: rec_hash[:reason] || rec_hash["reason"]
-                                                                 }.compact
-                                                               else
-                                                                 rec
-                                                               end
-                                                 {
-                                                   success: true,
-                                                   status: "SUCCESS",
-                                                   symbol: data[:symbol] || data["symbol"],
-                                                   timeframes: tf_summary,
-                                                   recommendation: rec_summary,
-                                                   confidence: data[:confidence] || data["confidence"],
-                                                   has_data: true,
-                                                   stop_calling_tools: true,
-                                                   message: "✅ COMPLETE DATA RECEIVED! Tool executed SUCCESSFULLY. You now have: symbol, timeframes (15m, 5m, 1m), indicators (EMA, trend), and recommendation (action, strike, premium, targets). STOP calling tools immediately and provide your final analysis with the recommendation details."
-                                                 }.compact
-                                               else
-                                                 # For other tools, use original slice
-                                                 data.slice(:status, :trend, :recommendation, :confidence,
-                                                            :suitable).compact
-                                               end
-                                             else
-                                               "Success"
-                                             end
-                              # Format as clear success message with data
-                              result_hash = {
-                                success: true,
-                                status: status,
-                                message: "Tool executed SUCCESSFULLY. Data retrieved successfully.",
-                                data: data_summary
-                              }
-                              result_hash.to_json
+
+                              # Debug: Log what we're getting
+                              @logger.debug "   Processing tool data: keys=#{data.is_a?(Hash) ? data.keys.inspect : "not a hash"}, has_timeframes=#{data.is_a?(Hash) && (data[:timeframes] || data["timeframes"])}, data_type=#{data.class}, data_empty=#{data.is_a?(Hash) && data.empty?}"
+
+                              # If data is empty or not a hash, something went wrong - use original tool_result
+                              if !data.is_a?(Hash) || data.empty?
+                                @logger.warn "   ⚠️ Tool data is empty or invalid, using original tool_result"
+                                # Return the original tool_result as-is so LLM can see what was stored
+                                tool_result.to_json
+                              else
+                                # Normalize keys to handle both symbol and string keys from JSON
+                                normalized_data = {}
+                                data.each do |k, v|
+                                  key = k.is_a?(Symbol) ? k : k.to_sym
+                                  normalized_data[key] = v
+                                end
+
+                                # For fetch_market_data, include timeframes and recommendation
+                                if normalized_data[:timeframes]
+                                  # Keep full timeframes data - don't summarize too much
+                                  tf_data = normalized_data[:timeframes]
+
+                                  # Include full recommendation details so LLM can see it
+                                  rec = normalized_data[:recommendation]
+
+                                  result_hash = {
+                                    success: true,
+                                    status: "SUCCESS",
+                                    symbol: normalized_data[:symbol],
+                                    timeframes: tf_data,
+                                    recommendation: rec,
+                                    confidence: normalized_data[:confidence],
+                                    has_data: true,
+                                    stop_calling_tools: true,
+                                    message: "✅ COMPLETE DATA RECEIVED! Tool executed SUCCESSFULLY. You now have: symbol, timeframes (15m, 5m, 1m), indicators (EMA, trend), and recommendation (action, strike, premium, targets). STOP calling tools immediately and provide your final analysis with the recommendation details."
+                                  }.compact
+                                  result_hash.to_json
+                                else
+                                  # For other tools, pass through normalized data
+                                  {
+                                    success: true,
+                                    status: status,
+                                    message: "Tool executed SUCCESSFULLY. Data retrieved successfully.",
+                                    data: normalized_data
+                                  }.to_json
+                                end
+                              end
                             else
                               {
                                 success: true,

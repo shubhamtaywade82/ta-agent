@@ -133,11 +133,27 @@ module TaAgent
       # @param symbol [String] Symbol name
       # @return [Hash] Option chain context
       def build_options(symbol:)
-        # TODO: Implement option chain fetching when DhanHQ API is available
+        # Fetch option chain for nearest expiry
+        chain_data = @client.fetch_option_chain(symbol: symbol, expiry: nil)
+
+        {
+          strikes: chain_data[:strikes] || [],
+          calls: chain_data[:calls] || [],
+          puts: chain_data[:puts] || [],
+          best_strike: nil, # Will be determined in Decision class based on spot price
+          expiry_dates: chain_data[:expiry_dates] || [],
+          selected_expiry: chain_data[:selected_expiry],
+          days_to_expiry: chain_data[:days_to_expiry],
+          status: chain_data[:strikes]&.any? || chain_data[:calls]&.any? || chain_data[:puts]&.any? ? "complete" : "no_data"
+        }
+      rescue DhanHQError => e
         {
           strikes: [],
+          calls: [],
+          puts: [],
           best_strike: nil,
-          status: "pending"
+          status: "error",
+          error: e.message
         }
       end
 

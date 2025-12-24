@@ -17,7 +17,7 @@
 module TaAgent
   module Agent
     class LoopState
-      MAX_STEPS = 3
+      MAX_STEPS = 5
       MAX_MEMORY_ITEMS = 50
 
       attr_reader :goal, :step_count, :memory, :last_tool_result, :conversation_history, :tool_cache
@@ -66,28 +66,20 @@ module TaAgent
         tool_content = if result[:success] && result[:data]
                          # Extract essential data including recommendation and stop signals
                          essential_data = if result[:data].is_a?(Hash)
-                                            # Build data hash with all important fields
+                                            # SIMPLIFIED: Just copy all data from source, handling both symbol and string keys
                                             data_hash = {}
+                                            source_data = result[:data]
 
-                                            # Always include these fields if they exist
-                                            %i[symbol timeframes recommendation confidence timestamp errors
-                                               status trend suitable value error stop_calling_tools message has_data].each do |key|
-                                              data_hash[key] = result[:data][key] if result[:data].key?(key)
+                                            # Copy ALL keys from source_data, normalizing to symbols
+                                            source_data.each do |k, v|
+                                              key = k.is_a?(Symbol) ? k : k.to_sym
+                                              data_hash[key] = v
                                             end
 
-                                            # Ensure recommendation is fully included (it's a hash, so include all its keys)
-                                            if result[:data][:recommendation]
-                                              data_hash[:recommendation] = result[:data][:recommendation]
-                                            end
-
-                                            # Ensure timeframes is included (it's a hash, so include all its keys)
-                                            if result[:data][:timeframes]
-                                              data_hash[:timeframes] = result[:data][:timeframes]
-                                            end
-
-                                            # Add explicit success indicator
+                                            # Add explicit success indicators
                                             data_hash[:tool_execution_status] = "SUCCESS"
                                             data_hash[:data_available] = true
+
                                             data_hash
                                           else
                                             { tool_execution_status: "SUCCESS", data_available: true,

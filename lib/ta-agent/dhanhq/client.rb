@@ -71,41 +71,148 @@ module TaAgent
       # Fetch option chain for a symbol
       # @param symbol [String] Symbol name
       # @param expiry [Date, String, nil] Expiry date (optional, defaults to nearest expiry)
-      # @return [Hash] Option chain data with :strikes, :expiry_dates, :symbol
+      # @return [Hash] Option chain data with :strikes, :expiry_dates, :symbol, :calls, :puts
       def fetch_option_chain(symbol:, expiry: nil)
         instrument = find_instrument(symbol)
         raise DhanHQError, "Instrument not found for symbol: #{symbol}" unless instrument
 
-        # Get available expiries
+        # Step 1: Get available expiries
         expiries = instrument.expiry_list
+        unless expiries&.any?
+          return { symbol: symbol, strikes: [], expiry_dates: [], selected_expiry: nil, calls: [],
+                   puts: [] }
+        end
 
-        # If no expiry specified, use the nearest one (first in list)
-        expiry_date = if expiry
-                        normalize_date(expiry)
-                      elsif expiries&.any?
-                        expiries.first
-                      else
-                        nil
-                      end
+        # Step 2: Find nearest expiry (closest to today, not in the past)
+        expiry_date_obj = if expiry
+                            # Normalize to Date object first
+                            case expiry
+                            when Date
+                              expiry
+                            when String
+                              Date.parse(expiry)
+                            else
+                              Date.parse(expiry.to_s)
+                            end
+                          else
+                            find_nearest_expiry(expiries)
+                          end
 
-        # Fetch option chain for the specified expiry
-        chain_data = if expiry_date
-                       instrument.option_chain(expiry: expiry_date)
-                     else
-                       { strikes: [], expiries: [] }
-                     end
+        unless expiry_date_obj
+          return { symbol: symbol, strikes: [], expiry_dates: expiries, selected_expiry: nil, calls: [],
+                   puts: [] }
+        end
 
-        # Transform to expected format
+        # Step 3: Fetch option chain for the specified expiry
+        # API expects expiry as string in "YYYY-MM-DD" format
+        expiry_date_str = expiry_date_obj.strftime("%Y-%m-%d")
+        chain_data = instrument.option_chain(expiry: expiry_date_str)
+
+        # Step 4: Transform to expected format
+        # Option chain might return different structures - handle both
+        strikes = []
+        calls = []
+        puts = []
+
+        # Debug: Log what we received (can be removed later)
+        # puts "DEBUG: Option chain data type: #{chain_data.class}"
+        # puts "DEBUG: Option chain keys: #{chain_data.keys.inspect}" if chain_data.is_a?(Hash)
+
+        if chain_data.is_a?(Hash)
+          # Check for calls and puts arrays (most common structure)
+          if chain_data.key?(:calls) || chain_data.key?("calls") || chain_data.key?(:puts) || chain_data.key?("puts")
+            calls = chain_data[:calls] || chain_data["calls"] || []
+            puts = chain_data[:puts] || chain_data["puts"] || []
+
+            # Extract unique strikes from both calls and puts
+            all_strikes = (calls.map { |c| c[:strike] || c["strike"] || c[:strike_price] || c["strike_price"] } +
+                          puts.map do |p|
+                            p[:strike] || p["strike"] || p[:strike_price] || p["strike_price"]
+                          end).compact.uniq.sort
+
+            strikes = all_strikes.map do |strike_val|
+              call_option = calls.find do |c|
+                (c[:strike] || c["strike"] || c[:strike_price] || c["strike_price"]) == strike_val
+              end
+              put_option = puts.find do |p|
+                (p[:strike] || p["strike"] || p[:strike_price] || p["strike_price"]) == strike_val
+              end
+              {
+                strike: strike_val,
+                strike_price: strike_val,
+                call: call_option,
+                put: put_option
+              }
+            end
+          elsif chain_data[:strikes] || chain_data["strikes"]
+            # If chain_data has strikes array
+            strikes = chain_data[:strikes] || chain_data["strikes"] || []
+          elsif chain_data[:strike] || chain_data["strike"]
+            # If chain_data has single strike
+            strikes = [chain_data[:strike] || chain_data["strike"]].flatten
+          end
+        elsif chain_data.is_a?(Array)
+          # If chain_data is directly an array, it might be calls, puts, or strikes
+          # Try to determine by checking first element structure
+          if chain_data.first.is_a?(Hash)
+            # Check if it's calls or puts by looking for option type indicators
+            first_item = chain_data.first
+            if first_item[:option_type] == "CE" || first_item["option_type"] == "CE" ||
+               first_item[:call] || first_item["call"]
+              calls = chain_data
+            elsif first_item[:option_type] == "PE" || first_item["option_type"] == "PE" ||
+                  first_item[:put] || first_item["put"]
+              puts = chain_data
+            else
+              strikes = chain_data
+            end
+          else
+            strikes = chain_data
+          end
+        end
+
         {
           symbol: symbol,
-          strikes: chain_data[:strikes] || chain_data[:strike] || [],
+          strikes: strikes,
+          calls: calls,
+          puts: puts,
           expiry_dates: expiries || [],
-          selected_expiry: expiry_date
+          selected_expiry: expiry_date_obj
         }
       rescue ::DhanHQ::Error => e
         raise DhanHQError, "DhanHQ API error for #{symbol}: #{e.message}"
       rescue StandardError => e
         raise DhanHQError, "Failed to fetch option chain for #{symbol}: #{e.message}"
+      end
+
+      # Find instrument by symbol
+      # @param symbol [String] Symbol name
+      # @return [DhanHQ::Models::Instrument, nil] Instrument or nil if not found
+      def find_instrument(symbol)
+        symbol_up = symbol.upcase
+
+        # Try common segments first for known indices
+        if SYMBOL_SEGMENTS.key?(symbol_up)
+          segment = SYMBOL_SEGMENTS[symbol_up]
+          ::DhanHQ::Models::Instrument.find(segment, symbol_up)
+        else
+          # Try common segments for unknown symbols
+          # First try IDX_I (indices), then NSE_EQ (equity)
+          %w[IDX_I NSE_EQ].each do |segment|
+            instrument = ::DhanHQ::Models::Instrument.find(segment, symbol_up)
+            return instrument if instrument
+          rescue StandardError
+            # Continue to next segment
+            next
+          end
+
+          # If not found, try find_anywhere if available
+          if ::DhanHQ::Models::Instrument.respond_to?(:find_anywhere)
+            ::DhanHQ::Models::Instrument.find_anywhere(symbol_up)
+          else
+            nil
+          end
+        end
       end
 
       # Fetch current market data
@@ -153,37 +260,30 @@ module TaAgent
         raise DhanHQError, "Failed to fetch quote for #{symbol}: #{e.message}"
       end
 
-      # Find instrument by symbol
-      # @param symbol [String] Symbol name
-      # @return [DhanHQ::Models::Instrument, nil] Instrument or nil if not found
-      def find_instrument(symbol)
-        symbol_up = symbol.upcase
+      private
 
-        # Try common segments first for known indices
-        if SYMBOL_SEGMENTS.key?(symbol_up)
-          segment = SYMBOL_SEGMENTS[symbol_up]
-          ::DhanHQ::Models::Instrument.find(segment, symbol_up)
-        else
-          # Try common segments for unknown symbols
-          # First try IDX_I (indices), then NSE_EQ (equity)
-          %w[IDX_I NSE_EQ].each do |segment|
-            instrument = ::DhanHQ::Models::Instrument.find(segment, symbol_up)
-            return instrument if instrument
-          rescue StandardError
-            # Continue to next segment
-            next
-          end
+      # Find the nearest expiry date (closest to today, not in the past)
+      # @param expiries [Array] Array of expiry dates (Date, String, or other formats)
+      # @return [Date, nil] Nearest expiry date or nil
+      def find_nearest_expiry(expiries)
+        return nil unless expiries&.any?
 
-          # If not found, try find_anywhere if available
-          if ::DhanHQ::Models::Instrument.respond_to?(:find_anywhere)
-            ::DhanHQ::Models::Instrument.find_anywhere(symbol_up)
+        today = Date.today
+        valid_expiries = expiries.map do |exp|
+          case exp
+          when Date
+            exp
+          when String
+            Date.parse(exp)
+          when Time
+            exp.to_date
           else
             nil
           end
-        end
-      end
+        end.compact.select { |d| d >= today }.sort
 
-      private
+        valid_expiries.first
+      end
 
       def initialize_dhanhq
         # Configure DhanHQ with credentials

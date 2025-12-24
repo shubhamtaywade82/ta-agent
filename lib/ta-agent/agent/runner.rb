@@ -48,7 +48,7 @@ module TaAgent
         )
         @context_builder = ContextBuilder.new(@dhanhq_client)
         @gates = Gates.new
-        @decision = Decision.new(@config)
+        @decision = Decision.new(@config, dhanhq_client: @dhanhq_client)
         @result = {
           symbol: @symbol,
           timestamp: Time.now,
