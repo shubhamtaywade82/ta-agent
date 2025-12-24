@@ -43,21 +43,29 @@ module TaAgent
         require "tty-prompt"
         require "tty-spinner"
         require "tty-table"
+        require "tty-box"
+        require "tty-progressbar"
+        require "tty-pager"
+        require "tty-tree"
         require "fileutils"
         setup_readline
 
         @prompt = TTY::Prompt.new
 
-        puts <<~BANNER
-          ╔═══════════════════════════════════════════════════════════╗
-          ║         ta-agent Interactive Console                      ║
-          ║         Technical Analysis Agent for Indian Markets       ║
-          ╚═══════════════════════════════════════════════════════════╝
+        # Use TTY::Box for beautiful banner
+        banner = TTY::Box.frame(
+          width: 60,
+          align: :center,
+          title: { top_left: " ta-agent ", bottom_right: " v#{TaAgent::VERSION} " },
+          border: :thick
+        ) do
+          "Interactive Console\nTechnical Analysis Agent\nfor Indian Markets"
+        end
 
-          Type 'help' for available commands, 'exit' to quit.
-          Use 'mode <name>' to switch modes (chat, agent, planning, deep_research).
-          Use ↑↓ arrow keys for command history, Tab for completion.
-        BANNER
+        puts banner
+        puts "\nType 'help' for available commands, 'exit' to quit."
+        puts "Use 'mode <name>' to switch modes (chat, agent, planning, deep_research)."
+        puts "Use ↑↓ arrow keys for command history, Tab for completion.\n"
 
         main_loop
       ensure
@@ -185,20 +193,21 @@ module TaAgent
           end
         end
 
-        # If in a mode, treat input as a prompt for that mode (unless it's a mode command)
-        if @current_mode && !cmd.downcase.start_with?("mode ")
-          handle_mode_prompt(cmd)
-          return
-        end
-
-        # Handle mode switching
+        # Handle mode switching first (works in any mode)
         if cmd.downcase.start_with?("mode ")
           mode_name = cmd.downcase.sub(/^mode\s+/, "").strip.to_sym
           switch_mode(mode_name)
           return
         end
 
-        # Regular commands
+        # If in a mode, treat ALL input as a prompt for that mode
+        # (except single-letter commands and mode commands which are handled above)
+        if @current_mode
+          handle_mode_prompt(cmd)
+          return
+        end
+
+        # Regular commands (only when NOT in a mode)
         case cmd.downcase
         when "exit", "quit", "q"
           @running = false
@@ -209,10 +218,12 @@ module TaAgent
           puts "ta-agent #{TaAgent::VERSION}"
         when "clear"
           system("clear") || system("cls")
-        when /^analyse\s+(.+)/i, /^analyze\s+(.+)/i
+        when /^analyse\s+([A-Z0-9]+)(?:\s|$)/i, /^analyze\s+([A-Z0-9]+)(?:\s|$)/i
+          # Only match if it's a simple symbol (uppercase letters/numbers), not a full sentence
           symbol = Regexp.last_match(1).strip
           run_analyse(symbol)
-        when /^watch\s+(.+)/i
+        when /^watch\s+([A-Z0-9]+)(?:\s|$)/i
+          # Only match if it's a simple symbol
           symbol = Regexp.last_match(1).strip
           run_watch_interactive(symbol)
         when "menu", "m"
@@ -227,10 +238,30 @@ module TaAgent
             set_model_interactive
           end
         else
-          puts "Unknown command: #{cmd}"
-          puts "Type 'help' for available commands"
-          puts "Or use 'mode <name>' to enter a mode (chat, agent, planning, deep_research)"
+          # Check if it looks like a natural language query
+          if looks_like_natural_language?(cmd)
+            puts "💡 This looks like a query that would work better in agent mode."
+            puts "   Try: mode agent"
+            puts "   Then type your question directly"
+            puts "\n   Or use: analyse NIFTY (for simple analysis)"
+          else
+            puts "Unknown command: #{cmd}"
+            puts "Type 'help' for available commands"
+            puts "Or use 'mode <name>' to enter a mode (chat, agent, planning, deep_research)"
+          end
         end
+      end
+
+      def looks_like_natural_language?(text)
+        # Check if text contains natural language indicators
+        natural_language_indicators = [
+          /\b(explain|describe|analyze|what|how|why|tell|show|find|search)\b/i,
+          /\b(and|or|the|a|an|is|are|was|were)\b/i,
+          /[.!?]$/ # Ends with punctuation
+        ]
+
+        # If it's longer than 20 chars and contains natural language indicators
+        text.length > 20 && natural_language_indicators.any? { |pattern| text.match?(pattern) }
       end
 
       def show_help
@@ -317,29 +348,49 @@ module TaAgent
           result = runner.run
           spinner.stop("Done!")
 
-          # Format results
-          puts "\n" + "=" * 60
-          puts "Analysis Results for #{result[:symbol]}"
-          puts "=" * 60
+          # Format results with TTY::Table and TTY::Box
+          require "tty-table"
 
-          if result[:errors].any?
-            puts "\n⚠ Errors:"
-            result[:errors].each { |error| puts "  - #{error}" }
+          # Build timeframe table
+          timeframe_rows = result[:timeframes].map do |tf, data|
+            status = data[:status] || "pending"
+            status_icon = case status
+                          when "complete" then "✅"
+                          when "error" then "❌"
+                          else "⏳"
+                          end
+            [tf.to_s.gsub(/^tf_/, "").upcase, "#{status_icon} #{status}"]
           end
 
-          puts "\nTimeframes:"
-          result[:timeframes].each do |tf, data|
-            puts "  #{tf.to_s.upcase}: #{data[:status] || "pending"}"
+          timeframe_table = TTY::Table.new(%w[Timeframe Status], timeframe_rows)
+          timeframe_display = timeframe_table.render(:unicode)
+
+          # Build recommendation section
+          recommendation_text = if result[:recommendation]
+                                  rec = result[:recommendation]
+                                  "Action: #{rec[:action].upcase}\n" \
+                                  "Reason: #{rec[:reason]}\n" \
+                                  "Confidence: #{(result[:confidence] * 100).round(1)}%"
+                                else
+                                  "No recommendation available"
+                                end
+
+          # Combine into box
+          content_parts = []
+          content_parts << "Timeframes:\n#{timeframe_display}" if timeframe_rows.any?
+          content_parts << "\nRecommendation:\n#{recommendation_text}" if result[:recommendation]
+          content_parts << "\n⚠ Errors:\n#{result[:errors].join("\n")}" if result[:errors].any?
+
+          result_box = TTY::Box.frame(
+            width: 70,
+            title: { top_left: " Analysis: #{result[:symbol]} ", bottom_right: " #{Time.now.strftime("%H:%M:%S")} " },
+            border: :thick,
+            padding: [1, 2]
+          ) do
+            content_parts.join("\n\n")
           end
 
-          if result[:recommendation]
-            rec = result[:recommendation]
-            puts "\nRecommendation: #{rec[:action].upcase}"
-            puts "  #{rec[:reason]}"
-            puts "  Confidence: #{(result[:confidence] * 100).round(1)}%"
-          end
-
-          puts "=" * 60 + "\n"
+          puts "\n#{result_box}\n"
         rescue StandardError => e
           spinner.stop("Error!")
           puts "\nError: #{e.message}"
@@ -565,12 +616,25 @@ module TaAgent
           spinner.stop("Done!")
 
           if result[:success]
-            puts "\n" + "=" * 60
-            puts "Agent Result:"
-            puts "=" * 60
-            puts result[:answer] || "Task completed"
-            puts "\nSteps taken: #{result[:steps]}" if result[:steps]
-            puts "=" * 60 + "\n"
+            # Parse answer if it's JSON, otherwise display as-is
+            answer = result[:answer] || "Task completed"
+            parsed_answer = parse_answer_if_json(answer)
+
+            # Use TTY::Box for beautiful result display
+            result_box = TTY::Box.frame(
+              width: 70,
+              title: { top_left: " Agent Result ", bottom_right: " Step #{result[:steps] || 0} " },
+              border: :thick,
+              padding: [1, 2]
+            ) do
+              content = parsed_answer
+              content += "\n\n" + "─" * 66 + "\n"
+              content += "Steps: #{result[:steps]}" if result[:steps]
+              content += " | Stop: #{result[:stop_reason]}" if result[:stop_reason]
+              content
+            end
+
+            puts "\n#{result_box}\n"
           else
             puts "\n❌ Agent error: #{result[:error]}\n"
           end
@@ -713,6 +777,32 @@ module TaAgent
           puts "💡 Cannot connect to Ollama at #{@config&.ollama_host_url}"
           puts "   Make sure Ollama is running: ollama serve"
           puts "   Or check if the host/port is correct"
+        end
+      end
+
+      def parse_answer_if_json(answer)
+        return answer unless answer.is_a?(String)
+
+        # Try to parse as JSON
+        begin
+          require "json"
+          parsed = JSON.parse(answer)
+
+          # If it's a hash with "content" key, extract it
+          if parsed.is_a?(Hash) && parsed["content"]
+            return parsed["content"]
+          elsif parsed.is_a?(Hash) && parsed[:content]
+            return parsed[:content]
+          end
+
+          # If it's a hash with "type": "final", extract content
+          return parsed["content"] if parsed.is_a?(Hash) && parsed["type"] == "final" && parsed["content"]
+
+          # Otherwise return original
+          answer
+        rescue JSON::ParserError
+          # Not JSON, return as-is
+          answer
         end
       end
 

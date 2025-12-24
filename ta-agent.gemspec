@@ -39,15 +39,19 @@ Gem::Specification.new do |spec|
   # Core dependencies - minimal, intentional
   # Note: DhanHQ git source is specified in Gemfile for development
   # Gemspecs cannot use git: option - use version requirement here
-  spec.add_dependency "tty-command", "~> 0.10"
-  spec.add_dependency "tty-prompt", "~> 0.23"
-  spec.add_dependency "tty-spinner", "~> 0.9"
-  spec.add_dependency "tty-table", "~> 0.12"
-  spec.add_dependency "tty-logger", "~> 0.6"
-  spec.add_dependency "tty-config", "~> 0.6"
   spec.add_dependency "faraday", ">= 0.9", "< 3.0"
   spec.add_dependency "json", "~> 2.6"
   spec.add_dependency "ruby-technical-analysis", "~> 1.0", ">= 1.0.4"
+  spec.add_dependency "tty-box", "~> 0.7"
+  spec.add_dependency "tty-command", "~> 0.10"
+  spec.add_dependency "tty-config", "~> 0.6"
+  spec.add_dependency "tty-logger", "~> 0.6"
+  spec.add_dependency "tty-pager", "~> 0.14"
+  spec.add_dependency "tty-progressbar", "~> 0.18"
+  spec.add_dependency "tty-prompt", "~> 0.23"
+  spec.add_dependency "tty-spinner", "~> 0.9"
+  spec.add_dependency "tty-table", "~> 0.12"
+  spec.add_dependency "tty-tree", "~> 0.4"
 
   # No Rails
   # No RSpec
